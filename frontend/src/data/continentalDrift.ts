@@ -11,4 +11,7 @@ export {
   GEO_ERAS,
   getEraForTime,
   interpolateContinents,
+  PRESENT_YEAR,
+  maToYear,
+  yearToMa,
 } from './mockLayers';

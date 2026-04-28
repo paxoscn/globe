@@ -43,18 +43,18 @@ export interface TileCoord {
 // Layer & Layer Group Metadata
 // ---------------------------------------------------------------------------
 
-/** Configuration for a layer's timeline slider. */
+/**
+ * Configuration for a layer's timeline slider.
+ *
+ * All layers share a single absolute-year time coordinate (CE year).
+ * Each layer defines its own display range in absolute years and a
+ * `formatType` that controls how the slider is rendered.
+ */
 export interface TimelineConfig {
-  /** Minimum value of the timeline (e.g. start timestamp or 0 Ma). */
-  min: number;
-  /** Maximum value of the timeline (e.g. end timestamp or 300 Ma). */
-  max: number;
-  /** Step size for the slider (0 for continuous). */
-  step: number;
-  /** Unit label for display (e.g. 'Ma', 'year'). */
-  unit: string;
-  /** Whether the slider direction is reversed (e.g. geological time goes right-to-left). */
-  reversed?: boolean;
+  /** Start of the layer's data range in absolute CE year (e.g. -300_000_000 for 300 Ma). */
+  startYear: number;
+  /** End of the layer's data range in absolute CE year (e.g. 2026 for present). */
+  endYear: number;
   /** Format function name — used to pick the right display formatter. */
   formatType: 'geological' | 'historical';
 }

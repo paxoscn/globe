@@ -28,10 +28,10 @@ export interface LayerManagerProps {
   layerGroups: LayerGroupMeta[];
   onLayerToggle: (layerId: string, enabled: boolean) => void;
   onGroupSliderChange: (groupId: string, position: number) => void;
-  /** Per-layer timeline values, keyed by layer ID. */
-  layerTimeValues?: Record<string, number>;
-  /** Called when a layer's timeline slider changes. */
-  onLayerTimeChange?: (layerId: string, value: number) => void;
+  /** Shared absolute CE year across all layers. */
+  currentYear: number;
+  /** Called when any layer's slider changes the shared time. */
+  onCurrentYearChange: (year: number) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,18 +61,11 @@ function useMediaQuery(query: string): boolean {
 interface LayerItemProps {
   layer: LayerMeta;
   onToggle: (layerId: string, enabled: boolean) => void;
-  timeValue?: number;
-  onTimeChange?: (layerId: string, value: number) => void;
+  currentYear: number;
+  onCurrentYearChange: (year: number) => void;
 }
 
-function LayerItem({ layer, onToggle, timeValue, onTimeChange }: LayerItemProps) {
-  const handleTimeChange = useCallback(
-    (value: number) => {
-      onTimeChange?.(layer.id, value);
-    },
-    [layer.id, onTimeChange],
-  );
-
+function LayerItem({ layer, onToggle, currentYear, onCurrentYearChange }: LayerItemProps) {
   return (
     <div data-testid={`layer-item-${layer.id}`}>
       <div style={layerItemStyle}>
@@ -103,12 +96,12 @@ function LayerItem({ layer, onToggle, timeValue, onTimeChange }: LayerItemProps)
         </label>
       </div>
       {/* Inline timeline slider when layer is enabled and has a timelineConfig */}
-      {layer.enabled && layer.timelineConfig && timeValue !== undefined && onTimeChange && (
+      {layer.enabled && layer.timelineConfig && (
         <div style={timelineSlotStyle} data-testid={`layer-timeline-${layer.id}`}>
           <LayerTimelineSlider
             config={layer.timelineConfig}
-            value={timeValue}
-            onChange={handleTimeChange}
+            currentYear={currentYear}
+            onCurrentYearChange={onCurrentYearChange}
           />
         </div>
       )}
@@ -120,16 +113,16 @@ interface LayerGroupSectionProps {
   group: LayerGroupMeta;
   onLayerToggle: (layerId: string, enabled: boolean) => void;
   onSliderChange: (groupId: string, position: number) => void;
-  layerTimeValues?: Record<string, number>;
-  onLayerTimeChange?: (layerId: string, value: number) => void;
+  currentYear: number;
+  onCurrentYearChange: (year: number) => void;
 }
 
 function LayerGroupSection({
   group,
   onLayerToggle,
   onSliderChange,
-  layerTimeValues,
-  onLayerTimeChange,
+  currentYear,
+  onCurrentYearChange,
 }: LayerGroupSectionProps) {
   const [expanded, setExpanded] = useState(false);
 
@@ -156,8 +149,8 @@ function LayerGroupSection({
               key={layer.id}
               layer={layer}
               onToggle={onLayerToggle}
-              timeValue={layerTimeValues?.[layer.id]}
-              onTimeChange={onLayerTimeChange}
+              currentYear={currentYear}
+              onCurrentYearChange={onCurrentYearChange}
             />
           ))}
 
@@ -195,8 +188,8 @@ export default function LayerManager({
   layerGroups,
   onLayerToggle,
   onGroupSliderChange,
-  layerTimeValues,
-  onLayerTimeChange,
+  currentYear,
+  onCurrentYearChange,
 }: LayerManagerProps) {
   const isDesktop = useMediaQuery('(min-width: 769px)');
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -221,8 +214,8 @@ export default function LayerManager({
           key={layer.id}
           layer={layer}
           onToggle={onLayerToggle}
-          timeValue={layerTimeValues?.[layer.id]}
-          onTimeChange={onLayerTimeChange}
+          currentYear={currentYear}
+          onCurrentYearChange={onCurrentYearChange}
         />
       ))}
 
@@ -233,8 +226,8 @@ export default function LayerManager({
           group={group}
           onLayerToggle={onLayerToggle}
           onSliderChange={onGroupSliderChange}
-          layerTimeValues={layerTimeValues}
-          onLayerTimeChange={onLayerTimeChange}
+          currentYear={currentYear}
+          onCurrentYearChange={onCurrentYearChange}
         />
       ))}
     </div>

@@ -278,11 +278,50 @@ export const CAMPAIGN_COLORS: Record<string, string> = {
 };
 
 // ---------------------------------------------------------------------------
+// Year conversion helpers
+// ---------------------------------------------------------------------------
+
+/** The current year, used as the "present" reference for geological time. */
+export const PRESENT_YEAR = 2026;
+
+/** Convert Ma (millions of years ago) to absolute CE year. */
+export function maToYear(ma: number): number {
+  return PRESENT_YEAR - ma * 1_000_000;
+}
+
+/** Convert absolute CE year to Ma (millions of years ago). */
+export function yearToMa(year: number): number {
+  return (PRESENT_YEAR - year) / 1_000_000;
+}
+
+/** Convert a JS timestamp (ms) to absolute CE year (fractional). */
+export function timestampToYear(ts: number): number {
+  const d = new Date(ts);
+  const y = d.getFullYear();
+  const startOfYear = new Date(y, 0, 1).getTime();
+  const endOfYear = new Date(y + 1, 0, 1).getTime();
+  return y + (ts - startOfYear) / (endOfYear - startOfYear);
+}
+
+/** Convert absolute CE year (fractional) to a JS timestamp (ms). */
+export function yearToTimestamp(year: number): number {
+  const y = Math.floor(year);
+  const frac = year - y;
+  const startOfYear = new Date(y, 0, 1).getTime();
+  const endOfYear = new Date(y + 1, 0, 1).getTime();
+  return startOfYear + frac * (endOfYear - startOfYear);
+}
+
+// ---------------------------------------------------------------------------
 // Layer metadata
 // ---------------------------------------------------------------------------
 
 /** Well-known layer ID for the Napoleon trajectory layer. */
 export const NAPOLEON_LAYER_ID = 'napoleon-trajectory';
+
+/** Napoleon data range in absolute CE years. */
+const NAPOLEON_START_YEAR = timestampToYear(TRAJECTORY_START); // ~1796.2
+const NAPOLEON_END_YEAR = timestampToYear(TRAJECTORY_END);     // ~1815.8
 
 export const MOCK_LAYERS: LayerMeta[] = [
   {
@@ -292,11 +331,8 @@ export const MOCK_LAYERS: LayerMeta[] = [
     enabled: true,
     lodLevels: [0, 1, 2],
     timelineConfig: {
-      min: DRIFT_MIN_MA,
-      max: DRIFT_MAX_MA,
-      step: 0,
-      unit: 'Ma',
-      reversed: true,
+      startYear: maToYear(DRIFT_MAX_MA), // -299,997,974
+      endYear: maToYear(DRIFT_MIN_MA),   // 2026 (present)
       formatType: 'geological',
     },
   },
@@ -314,11 +350,8 @@ export const MOCK_LAYERS: LayerMeta[] = [
     enabled: false,
     lodLevels: [0],
     timelineConfig: {
-      min: TRAJECTORY_START,
-      max: TRAJECTORY_END,
-      step: 0,
-      unit: 'year',
-      reversed: false,
+      startYear: NAPOLEON_START_YEAR,
+      endYear: NAPOLEON_END_YEAR,
       formatType: 'historical',
     },
   },

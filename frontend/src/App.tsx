@@ -37,6 +37,9 @@ import {
   NAPOLEON_LAYER_ID,
   NAPOLEON_TRAJECTORY,
   TRAJECTORY_START,
+  PRESENT_YEAR,
+  yearToMa,
+  yearToTimestamp,
   interpolatePosition,
   interpolateContinents,
 } from './data/mockLayers';
@@ -127,22 +130,17 @@ export default function App() {
   const [interpolatedObjects, setInterpolatedObjects] = useState<InterpolatedObject[]>([]);
   const [, setError] = useState<string | null>(null);
 
-  // Unified per-layer timeline values (keyed by layer ID)
-  // world-borders → Ma value (0 = present), napoleon-trajectory → timestamp
-  const [layerTimeValues, setLayerTimeValues] = useState<Record<string, number>>({
-    'world-borders': 0,
-    [NAPOLEON_LAYER_ID]: TRAJECTORY_START,
-  });
+  // Shared absolute-year time coordinate.
+  // All layers share this single "current year" (CE).
+  // E.g. 1807 = year 1807, -300_000_000 = 300 Ma ago, 2026 = present.
+  const [currentYear, setCurrentYear] = useState(PRESENT_YEAR);
 
-  const handleLayerTimeChange = useCallback((layerId: string, value: number) => {
-    setLayerTimeValues((prev) => ({ ...prev, [layerId]: value }));
-  }, []);
-
-  // Derived convenience values
+  // Derived per-layer native values from the shared currentYear
   const napoleonEnabled = activeLayerIds.has(NAPOLEON_LAYER_ID);
-  const napoleonTime = layerTimeValues[NAPOLEON_LAYER_ID] ?? TRAJECTORY_START;
-  const driftMa = layerTimeValues['world-borders'] ?? 0;
-  const worldBordersEnabled = activeLayerIds.has('world-borders');
+  const driftMa = yearToMa(currentYear);
+  const napoleonTime = yearToTimestamp(
+    Math.max(1796, Math.min(1815.99, currentYear)),
+  );
 
   const napoleonPosition = useMemo(() => {
     if (!napoleonEnabled) return null;
@@ -398,8 +396,8 @@ export default function App() {
           layerGroups={layerGroups}
           onLayerToggle={handleLayerToggle}
           onGroupSliderChange={handleGroupSliderChange}
-          layerTimeValues={layerTimeValues}
-          onLayerTimeChange={handleLayerTimeChange}
+          currentYear={currentYear}
+          onCurrentYearChange={setCurrentYear}
         />
       }
       overlayControls={

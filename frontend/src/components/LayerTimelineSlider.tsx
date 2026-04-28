@@ -2,14 +2,14 @@
  * LayerTimelineSlider — Unified timeline slider for any layer with a
  * time dimension. Renders inline below the layer toggle in the LayerManager.
  *
- * Supports two format types:
- * - 'geological': Continental drift (0–300 Ma) with era segments
- * - 'historical': Napoleon trajectory (1796–1815) with campaign segments
+ * All layers share a single absolute CE year (`currentYear`). Each slider
+ * displays its own range and converts between the shared year and its
+ * native display format. When `currentYear` is outside the layer's data
+ * range, an "out of range" indicator is shown.
  *
- * Features:
- * - Play/pause auto-advance
- * - Color-coded progress segments
- * - Contextual info display (era/campaign/date)
+ * Supports two format types:
+ * - 'geological': Continental drift with era segments (range in Ma)
+ * - 'historical': Napoleon trajectory with campaign segments (range in years)
  */
 
 import { useState, useCallback, useEffect, useRef, type CSSProperties } from 'react';
@@ -17,6 +17,10 @@ import type { TimelineConfig } from '../types';
 import {
   GEO_ERAS,
   getEraForTime,
+  yearToMa,
+  maToYear,
+  yearToTimestamp,
+  timestampToYear,
   DRIFT_MAX_MA,
   DRIFT_MIN_MA,
   NAPOLEON_TRAJECTORY,
@@ -33,20 +37,20 @@ import {
 export interface LayerTimelineSliderProps {
   /** The timeline configuration from the layer's metadata. */
   config: TimelineConfig;
-  /** Current timeline value. */
-  value: number;
-  /** Called when the user changes the timeline value. */
-  onChange: (value: number) => void;
+  /** Shared absolute CE year. */
+  currentYear: number;
+  /** Called when the user changes the shared time. */
+  onCurrentYearChange: (year: number) => void;
 }
 
 // ---------------------------------------------------------------------------
-// Playback speeds
+// Playback speed: years per animation frame at ~60fps
 // ---------------------------------------------------------------------------
 
-/** Geological: Ma per animation frame at ~60fps */
-const GEO_SPEED = 0.8;
-/** Historical: ms of Napoleon-time per animation frame */
-const HIST_SPEED = 86400000 * 15; // 15 days per frame
+/** Geological playback: ~0.8 Ma per frame = 800,000 years per frame */
+const GEO_YEARS_PER_FRAME = 800_000;
+/** Historical playback: ~15 days per frame ≈ 0.041 years per frame */
+const HIST_YEARS_PER_FRAME = 15 / 365;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -63,50 +67,45 @@ function formatDate(timestamp: number): string {
 
 export default function LayerTimelineSlider({
   config,
-  value,
-  onChange,
+  currentYear,
+  onCurrentYearChange,
 }: LayerTimelineSliderProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const animFrameRef = useRef<number>(0);
   const lastFrameTimeRef = useRef<number>(0);
 
   const isGeo = config.formatType === 'geological';
+  const { startYear, endYear } = config;
 
-  // Normalized slider position 0..1 (left to right)
-  const sliderValue = isGeo
-    ? 1 - (value - DRIFT_MIN_MA) / (DRIFT_MAX_MA - DRIFT_MIN_MA)
-    : (value - TRAJECTORY_START) / (TRAJECTORY_END - TRAJECTORY_START);
+  // Is the current time within this layer's data range?
+  const inRange = currentYear >= startYear && currentYear <= endYear;
 
-  // --- Playback loop ---
+  // Normalized slider position 0..1 (left = startYear, right = endYear)
+  const range = endYear - startYear;
+  const clampedYear = Math.max(startYear, Math.min(endYear, currentYear));
+  const sliderValue = range > 0 ? (clampedYear - startYear) / range : 0;
+
+  // --- Playback loop (always advances toward endYear) ---
   useEffect(() => {
     if (!isPlaying) return;
 
     lastFrameTimeRef.current = performance.now();
+    const speed = isGeo ? GEO_YEARS_PER_FRAME : HIST_YEARS_PER_FRAME;
 
     const tick = (now: number) => {
       const delta = now - lastFrameTimeRef.current;
       lastFrameTimeRef.current = now;
 
-      if (isGeo) {
-        const advance = (delta / 16.67) * GEO_SPEED;
-        const next = value - advance; // Ma decreases toward present
-        if (next <= DRIFT_MIN_MA) {
-          onChange(DRIFT_MIN_MA);
-          setIsPlaying(false);
-          return;
-        }
-        onChange(next);
-      } else {
-        const advance = (delta / 16.67) * HIST_SPEED;
-        const next = value + advance;
-        if (next >= TRAJECTORY_END) {
-          onChange(TRAJECTORY_END);
-          setIsPlaying(false);
-          return;
-        }
-        onChange(next);
+      const advance = (delta / 16.67) * speed;
+      const next = currentYear + advance;
+
+      if (next >= endYear) {
+        onCurrentYearChange(endYear);
+        setIsPlaying(false);
+        return;
       }
 
+      onCurrentYearChange(next);
       animFrameRef.current = requestAnimationFrame(tick);
     };
 
@@ -114,52 +113,50 @@ export default function LayerTimelineSlider({
     return () => {
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [isPlaying, value, onChange, isGeo]);
+  }, [isPlaying, currentYear, onCurrentYearChange, endYear, isGeo]);
 
-  // --- Slider change ---
+  // --- Slider change: convert 0..1 back to absolute year ---
   const handleSliderChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const val = parseFloat(e.target.value); // 0..1
-      if (isGeo) {
-        const ma = DRIFT_MAX_MA - val * (DRIFT_MAX_MA - DRIFT_MIN_MA);
-        onChange(ma);
-      } else {
-        const ts = TRAJECTORY_START + val * (TRAJECTORY_END - TRAJECTORY_START);
-        onChange(ts);
-      }
+      const year = startYear + val * range;
+      onCurrentYearChange(year);
     },
-    [onChange, isGeo],
+    [onCurrentYearChange, startYear, range],
   );
 
   // --- Play/Pause ---
   const togglePlay = useCallback(() => {
-    if (isGeo) {
-      if (value <= DRIFT_MIN_MA) onChange(DRIFT_MAX_MA);
-    } else {
-      if (value >= TRAJECTORY_END) onChange(TRAJECTORY_START);
+    if (currentYear >= endYear || currentYear < startYear) {
+      onCurrentYearChange(startYear);
     }
     setIsPlaying((prev) => !prev);
-  }, [value, onChange, isGeo]);
+  }, [currentYear, startYear, endYear, onCurrentYearChange]);
 
   // --- Render geological slider ---
   if (isGeo) {
-    const era = getEraForTime(value);
-    const timeLabel =
-      value < 1
+    const ma = yearToMa(currentYear);
+    const era = getEraForTime(Math.max(0, ma));
+
+    const timeLabel = !inRange
+      ? `${Math.round(currentYear)} CE — 超出范围`
+      : ma < 0.001
         ? '现代'
-        : value < 10
-          ? `${value.toFixed(1)} 百万年前`
-          : `${Math.round(value)} 百万年前`;
+        : ma < 10
+          ? `${ma.toFixed(1)} 百万年前`
+          : `${Math.round(ma)} 百万年前`;
 
     return (
       <div style={containerStyle} data-testid="layer-timeline-slider">
         {/* Info row */}
         <div style={infoRowStyle}>
           <span style={infoLabelStyle}>🌍 {timeLabel}</span>
-          <span style={badgeStyle(era.color)}>
-            {era.name} ({era.nameEn})
-          </span>
-          {value >= 280 && <span style={pangeaStyle}>盘古大陆</span>}
+          {inRange && (
+            <span style={badgeStyle(era.color)}>
+              {era.name} ({era.nameEn})
+            </span>
+          )}
+          {inRange && ma >= 280 && <span style={pangeaStyle}>盘古大陆</span>}
         </div>
 
         {/* Slider row */}
@@ -178,17 +175,18 @@ export default function LayerTimelineSlider({
             {/* Era color segments */}
             <div style={trackBgStyle}>
               {GEO_ERAS.map((e) => {
-                const leftPct =
-                  ((DRIFT_MAX_MA - e.startMa) / (DRIFT_MAX_MA - DRIFT_MIN_MA)) * 100;
-                const widthPct =
-                  ((e.startMa - e.endMa) / (DRIFT_MAX_MA - DRIFT_MIN_MA)) * 100;
+                // Convert Ma to slider position (startYear..endYear)
+                const eraStartYear = maToYear(e.startMa);
+                const eraEndYear = maToYear(e.endMa);
+                const leftPct = ((eraStartYear - startYear) / range) * 100;
+                const widthPct = ((eraEndYear - eraStartYear) / range) * 100;
                 return (
                   <div
                     key={e.nameEn}
                     style={{
                       position: 'absolute',
-                      left: `${leftPct}%`,
-                      width: `${widthPct}%`,
+                      left: `${Math.max(0, leftPct)}%`,
+                      width: `${Math.min(100 - Math.max(0, leftPct), widthPct)}%`,
                       height: '100%',
                       backgroundColor: e.color,
                       opacity: 0.3,
@@ -213,10 +211,9 @@ export default function LayerTimelineSlider({
             {/* Era labels */}
             <div style={labelTrackStyle}>
               {GEO_ERAS.map((e) => {
-                const centerPct =
-                  ((DRIFT_MAX_MA - (e.startMa + e.endMa) / 2) /
-                    (DRIFT_MAX_MA - DRIFT_MIN_MA)) *
-                  100;
+                const eraCenterYear = maToYear((e.startMa + e.endMa) / 2);
+                const centerPct = ((eraCenterYear - startYear) / range) * 100;
+                if (centerPct < 0 || centerPct > 100) return null;
                 return (
                   <span
                     key={e.nameEn}
@@ -250,14 +247,20 @@ export default function LayerTimelineSlider({
   }
 
   // --- Render historical (Napoleon) slider ---
-  const position = interpolatePosition(value);
-  const campaignColor = CAMPAIGN_COLORS[position.campaign] ?? '#e0e8ff';
+  // Convert currentYear to a timestamp for Napoleon interpolation
+  const napTs = yearToTimestamp(currentYear);
+  const napInRange = napTs >= TRAJECTORY_START && napTs <= TRAJECTORY_END;
+  const position = napInRange ? interpolatePosition(napTs) : null;
+  const campaignColor = position
+    ? (CAMPAIGN_COLORS[position.campaign] ?? '#e0e8ff')
+    : '#64748b';
 
   // Year ticks
   const yearTicks: { year: number; pct: number }[] = [];
   for (let year = 1796; year <= 1815; year++) {
     const ts = new Date(`${year}-01-01`).getTime();
-    const pct = ((ts - TRAJECTORY_START) / (TRAJECTORY_END - TRAJECTORY_START)) * 100;
+    const yearVal = timestampToYear(ts);
+    const pct = ((yearVal - startYear) / range) * 100;
     if (pct >= 0 && pct <= 100) yearTicks.push({ year, pct });
   }
 
@@ -265,10 +268,20 @@ export default function LayerTimelineSlider({
     <div style={containerStyle} data-testid="layer-timeline-slider">
       {/* Info row */}
       <div style={infoRowStyle}>
-        <span style={infoLabelStyle}>{formatDate(value)}</span>
-        <span style={badgeStyle(campaignColor)}>{position.campaign}</span>
-        <span style={locationStyle}>📍 {position.location}</span>
-        <span style={eventStyle}>{position.event}</span>
+        {napInRange && position ? (
+          <>
+            <span style={infoLabelStyle}>{formatDate(napTs)}</span>
+            <span style={badgeStyle(campaignColor)}>{position.campaign}</span>
+            <span style={locationStyle}>📍 {position.location}</span>
+            <span style={eventStyle}>{position.event}</span>
+          </>
+        ) : (
+          <span style={outOfRangeStyle}>
+            {currentYear < startYear
+              ? `${Math.round(currentYear)} CE — 早于数据范围`
+              : `${Math.round(currentYear)} CE — 晚于数据范围`}
+          </span>
+        )}
       </div>
 
       {/* Slider row */}
@@ -301,10 +314,10 @@ export default function LayerTimelineSlider({
             {NAPOLEON_TRAJECTORY.map((wp, i) => {
               if (i === 0) return null;
               const prev = NAPOLEON_TRAJECTORY[i - 1];
-              const startPct =
-                ((prev.timestamp - TRAJECTORY_START) / (TRAJECTORY_END - TRAJECTORY_START)) * 100;
-              const endPct =
-                ((wp.timestamp - TRAJECTORY_START) / (TRAJECTORY_END - TRAJECTORY_START)) * 100;
+              const segStartYear = timestampToYear(prev.timestamp);
+              const segEndYear = timestampToYear(wp.timestamp);
+              const startPct = ((segStartYear - startYear) / range) * 100;
+              const endPct = ((segEndYear - startYear) / range) * 100;
               const color = CAMPAIGN_COLORS[wp.campaign] ?? '#334155';
               return (
                 <div
@@ -405,6 +418,12 @@ const eventStyle: CSSProperties = {
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
+};
+
+const outOfRangeStyle: CSSProperties = {
+  fontSize: 11,
+  color: '#64748b',
+  fontStyle: 'italic',
 };
 
 const sliderRowStyle: CSSProperties = {
