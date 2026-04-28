@@ -43,6 +43,22 @@ export interface TileCoord {
 // Layer & Layer Group Metadata
 // ---------------------------------------------------------------------------
 
+/** Configuration for a layer's timeline slider. */
+export interface TimelineConfig {
+  /** Minimum value of the timeline (e.g. start timestamp or 0 Ma). */
+  min: number;
+  /** Maximum value of the timeline (e.g. end timestamp or 300 Ma). */
+  max: number;
+  /** Step size for the slider (0 for continuous). */
+  step: number;
+  /** Unit label for display (e.g. 'Ma', 'year'). */
+  unit: string;
+  /** Whether the slider direction is reversed (e.g. geological time goes right-to-left). */
+  reversed?: boolean;
+  /** Format function name — used to pick the right display formatter. */
+  formatType: 'geological' | 'historical';
+}
+
 /** Metadata for a single vector data layer. */
 export interface LayerMeta {
   id: string;
@@ -51,6 +67,8 @@ export interface LayerMeta {
   enabled: boolean;
   /** Available LOD levels for this layer. */
   lodLevels: number[];
+  /** Optional timeline configuration — if present, a slider is shown for this layer. */
+  timelineConfig?: TimelineConfig;
 }
 
 /** Metadata for a group of related layers (e.g. historical time series). */

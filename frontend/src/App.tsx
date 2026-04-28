@@ -3,7 +3,7 @@
  *
  * Initializes application state, fetches layer metadata, and wires together:
  * - GlobeRenderer (3D globe with vector data)
- * - LayerManager (layer list, toggles, group sliders)
+ * - LayerManager (layer list, toggles, group sliders, inline timeline sliders)
  * - ViewControls (reset orientation / zoom buttons)
  * - Layout (responsive desktop sidebar / mobile drawer)
  * - TileLoader + MemoryManager (tile loading pipeline)
@@ -31,15 +31,15 @@ import type { GlobeHandle } from './components/GlobeRenderer';
 import LayerManager from './components/LayerManager';
 import ViewControls from './components/ViewControls';
 import Layout from './components/Layout';
-import { MOCK_LAYERS, MOCK_GEOJSON, NAPOLEON_LAYER_ID } from './data/mockLayers';
 import {
+  MOCK_LAYERS,
+  MOCK_GEOJSON,
+  NAPOLEON_LAYER_ID,
   NAPOLEON_TRAJECTORY,
   TRAJECTORY_START,
   interpolatePosition,
-} from './data/napoleonTrajectory';
-import { interpolateContinents } from './data/continentalDrift';
-import TimelineSlider from './components/TimelineSlider';
-import DriftTimelineSlider from './components/DriftTimelineSlider';
+  interpolateContinents,
+} from './data/mockLayers';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -127,26 +127,28 @@ export default function App() {
   const [interpolatedObjects, setInterpolatedObjects] = useState<InterpolatedObject[]>([]);
   const [, setError] = useState<string | null>(null);
 
-  // Napoleon timeline state
-  const [napoleonTime, setNapoleonTime] = useState<number>(TRAJECTORY_START);
+  // Unified per-layer timeline values (keyed by layer ID)
+  // world-borders → Ma value (0 = present), napoleon-trajectory → timestamp
+  const [layerTimeValues, setLayerTimeValues] = useState<Record<string, number>>({
+    'world-borders': 0,
+    [NAPOLEON_LAYER_ID]: TRAJECTORY_START,
+  });
+
+  const handleLayerTimeChange = useCallback((layerId: string, value: number) => {
+    setLayerTimeValues((prev) => ({ ...prev, [layerId]: value }));
+  }, []);
+
+  // Derived convenience values
   const napoleonEnabled = activeLayerIds.has(NAPOLEON_LAYER_ID);
+  const napoleonTime = layerTimeValues[NAPOLEON_LAYER_ID] ?? TRAJECTORY_START;
+  const driftMa = layerTimeValues['world-borders'] ?? 0;
+  const worldBordersEnabled = activeLayerIds.has('world-borders');
+
   const napoleonPosition = useMemo(() => {
     if (!napoleonEnabled) return null;
     const pos = interpolatePosition(napoleonTime);
     return { lat: pos.lat, lng: pos.lng, campaign: pos.campaign };
   }, [napoleonTime, napoleonEnabled]);
-
-  const handleNapoleonTimeChange = useCallback((timestamp: number) => {
-    setNapoleonTime(timestamp);
-  }, []);
-
-  // Continental drift timeline state
-  const [driftMa, setDriftMa] = useState<number>(0); // 0 = present day
-  const worldBordersEnabled = activeLayerIds.has('world-borders');
-
-  const handleDriftTimeChange = useCallback((ma: number) => {
-    setDriftMa(ma);
-  }, []);
 
   // Refs for services (stable across renders)
   const memoryManagerRef = useRef<MemoryManager>(new MemoryManager());
@@ -286,8 +288,6 @@ export default function App() {
         if (visibleTiles.length === 0) return;
 
         // Compute viewport center for tile prioritization
-        // Use the quaternion to derive center lat/lng
-        // The center is approximated from the first visible tile's average
         const centerLat =
           visibleTiles.reduce((sum, t) => {
             const n = 1 << t.z;
@@ -349,9 +349,6 @@ export default function App() {
       // Get or build object references for this group
       let objRefs = objectRefsRef.current.get(groupId);
       if (!objRefs) {
-        // Build an empty ObjectRefMap — in a real app this would be populated
-        // from the API response. For now, we initialize it empty and it gets
-        // populated as tiles are loaded.
         objRefs = new Map<string, ObjectReference[]>();
         objectRefsRef.current.set(groupId, objRefs);
       }
@@ -401,44 +398,15 @@ export default function App() {
           layerGroups={layerGroups}
           onLayerToggle={handleLayerToggle}
           onGroupSliderChange={handleGroupSliderChange}
+          layerTimeValues={layerTimeValues}
+          onLayerTimeChange={handleLayerTimeChange}
         />
       }
       overlayControls={
-        <>
-          <ViewControls
-            onResetOrientation={handleResetOrientation}
-            onResetZoom={handleResetZoom}
-          />
-          <div style={{
-            position: 'absolute',
-            bottom: 0,
-            left: 0,
-            right: 0,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
-            padding: 20,
-            paddingRight: 320,
-            pointerEvents: 'none',
-          }}>
-            {napoleonEnabled && (
-              <div style={{ pointerEvents: 'auto' }}>
-                <TimelineSlider
-                  currentTime={napoleonTime}
-                  onTimeChange={handleNapoleonTimeChange}
-                />
-              </div>
-            )}
-            {worldBordersEnabled && (
-              <div style={{ pointerEvents: 'auto' }}>
-                <DriftTimelineSlider
-                  currentMa={driftMa}
-                  onTimeChange={handleDriftTimeChange}
-                />
-              </div>
-            )}
-          </div>
-        </>
+        <ViewControls
+          onResetOrientation={handleResetOrientation}
+          onResetZoom={handleResetZoom}
+        />
       }
     />
   );

@@ -6,6 +6,7 @@
  *
  * Displays:
  * - A list of all layers with toggle switches for enable/disable
+ * - An inline timeline slider under each enabled layer that has a timelineConfig
  * - Layer groups with expandable/collapsible sections containing child layers
  *   and a slider control for transitioning between layers in the group
  *
@@ -16,6 +17,7 @@
 
 import { useState, useCallback, useEffect, type CSSProperties } from 'react';
 import type { LayerMeta, LayerGroupMeta } from '../types';
+import LayerTimelineSlider from './LayerTimelineSlider';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -26,6 +28,10 @@ export interface LayerManagerProps {
   layerGroups: LayerGroupMeta[];
   onLayerToggle: (layerId: string, enabled: boolean) => void;
   onGroupSliderChange: (groupId: string, position: number) => void;
+  /** Per-layer timeline values, keyed by layer ID. */
+  layerTimeValues?: Record<string, number>;
+  /** Called when a layer's timeline slider changes. */
+  onLayerTimeChange?: (layerId: string, value: number) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,36 +61,57 @@ function useMediaQuery(query: string): boolean {
 interface LayerItemProps {
   layer: LayerMeta;
   onToggle: (layerId: string, enabled: boolean) => void;
+  timeValue?: number;
+  onTimeChange?: (layerId: string, value: number) => void;
 }
 
-function LayerItem({ layer, onToggle }: LayerItemProps) {
+function LayerItem({ layer, onToggle, timeValue, onTimeChange }: LayerItemProps) {
+  const handleTimeChange = useCallback(
+    (value: number) => {
+      onTimeChange?.(layer.id, value);
+    },
+    [layer.id, onTimeChange],
+  );
+
   return (
-    <div style={layerItemStyle} data-testid={`layer-item-${layer.id}`}>
-      <span style={layerNameStyle}>{layer.name}</span>
-      <label style={toggleLabelStyle} data-testid={`layer-toggle-${layer.id}`}>
-        <input
-          type="checkbox"
-          checked={layer.enabled}
-          onChange={() => onToggle(layer.id, !layer.enabled)}
-          aria-label={`Toggle ${layer.name}`}
-          style={checkboxStyle}
-        />
-        <span
-          style={{
-            ...toggleTrackStyle,
-            backgroundColor: layer.enabled
-              ? 'rgba(100, 140, 255, 0.8)'
-              : 'rgba(100, 100, 120, 0.4)',
-          }}
-        >
+    <div data-testid={`layer-item-${layer.id}`}>
+      <div style={layerItemStyle}>
+        <span style={layerNameStyle}>{layer.name}</span>
+        <label style={toggleLabelStyle} data-testid={`layer-toggle-${layer.id}`}>
+          <input
+            type="checkbox"
+            checked={layer.enabled}
+            onChange={() => onToggle(layer.id, !layer.enabled)}
+            aria-label={`Toggle ${layer.name}`}
+            style={checkboxStyle}
+          />
           <span
             style={{
-              ...toggleThumbStyle,
-              transform: layer.enabled ? 'translateX(16px)' : 'translateX(0)',
+              ...toggleTrackStyle,
+              backgroundColor: layer.enabled
+                ? 'rgba(100, 140, 255, 0.8)'
+                : 'rgba(100, 100, 120, 0.4)',
             }}
+          >
+            <span
+              style={{
+                ...toggleThumbStyle,
+                transform: layer.enabled ? 'translateX(16px)' : 'translateX(0)',
+              }}
+            />
+          </span>
+        </label>
+      </div>
+      {/* Inline timeline slider when layer is enabled and has a timelineConfig */}
+      {layer.enabled && layer.timelineConfig && timeValue !== undefined && onTimeChange && (
+        <div style={timelineSlotStyle} data-testid={`layer-timeline-${layer.id}`}>
+          <LayerTimelineSlider
+            config={layer.timelineConfig}
+            value={timeValue}
+            onChange={handleTimeChange}
           />
-        </span>
-      </label>
+        </div>
+      )}
     </div>
   );
 }
@@ -93,12 +120,16 @@ interface LayerGroupSectionProps {
   group: LayerGroupMeta;
   onLayerToggle: (layerId: string, enabled: boolean) => void;
   onSliderChange: (groupId: string, position: number) => void;
+  layerTimeValues?: Record<string, number>;
+  onLayerTimeChange?: (layerId: string, value: number) => void;
 }
 
 function LayerGroupSection({
   group,
   onLayerToggle,
   onSliderChange,
+  layerTimeValues,
+  onLayerTimeChange,
 }: LayerGroupSectionProps) {
   const [expanded, setExpanded] = useState(false);
 
@@ -121,7 +152,13 @@ function LayerGroupSection({
       {expanded && (
         <div style={groupContentStyle} data-testid={`group-content-${group.id}`}>
           {group.layers.map((layer) => (
-            <LayerItem key={layer.id} layer={layer} onToggle={onLayerToggle} />
+            <LayerItem
+              key={layer.id}
+              layer={layer}
+              onToggle={onLayerToggle}
+              timeValue={layerTimeValues?.[layer.id]}
+              onTimeChange={onLayerTimeChange}
+            />
           ))}
 
           {group.layers.length > 1 && (
@@ -158,6 +195,8 @@ export default function LayerManager({
   layerGroups,
   onLayerToggle,
   onGroupSliderChange,
+  layerTimeValues,
+  onLayerTimeChange,
 }: LayerManagerProps) {
   const isDesktop = useMediaQuery('(min-width: 769px)');
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -178,7 +217,13 @@ export default function LayerManager({
 
       {/* Standalone layers */}
       {standaloneLayers.map((layer) => (
-        <LayerItem key={layer.id} layer={layer} onToggle={onLayerToggle} />
+        <LayerItem
+          key={layer.id}
+          layer={layer}
+          onToggle={onLayerToggle}
+          timeValue={layerTimeValues?.[layer.id]}
+          onTimeChange={onLayerTimeChange}
+        />
       ))}
 
       {/* Layer groups */}
@@ -188,6 +233,8 @@ export default function LayerManager({
           group={group}
           onLayerToggle={onLayerToggle}
           onSliderChange={onGroupSliderChange}
+          layerTimeValues={layerTimeValues}
+          onLayerTimeChange={onLayerTimeChange}
         />
       ))}
     </div>
@@ -339,6 +386,11 @@ const toggleThumbStyle: CSSProperties = {
   top: 2,
   left: 2,
   transition: 'transform 0.2s',
+};
+
+const timelineSlotStyle: CSSProperties = {
+  paddingLeft: 4,
+  paddingBottom: 4,
 };
 
 const groupSectionStyle: CSSProperties = {
