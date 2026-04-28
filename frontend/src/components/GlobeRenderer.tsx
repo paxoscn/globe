@@ -1,5 +1,5 @@
 /**
- * GlobeRenderer — Renders a transparent 3D globe with Fresnel-based transparency
+ * GlobeRenderer — Renders an transparent 3D globe with Fresnel-based edge glow
  * and latitude/longitude grid lines using react-three-fiber and a custom ShaderMaterial.
  *
  * Requirements: 1.1 (transparent globe), 1.2 (lat/lng grid), 1.3 (≥30fps)
@@ -9,8 +9,10 @@ import { useRef, useMemo, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { EnabledLayer, InterpolatedObject, Viewport } from '../types';
+import type { FeatureCollection } from '../types/geojson';
 import { useArcballRotation } from '../hooks/useArcballRotation';
 import { useZoom, DEFAULT_MIN_ZOOM, DEFAULT_MAX_ZOOM, DEFAULT_ZOOM } from '../hooks/useZoom';
+import { latLngToSpherePosition } from '../utils/geojsonRenderer';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -18,6 +20,7 @@ import { useZoom, DEFAULT_MIN_ZOOM, DEFAULT_MAX_ZOOM, DEFAULT_ZOOM } from '../ho
 
 export interface GlobeRendererProps {
   layers: EnabledLayer[];
+  layerGeoJSON?: Record<string, FeatureCollection>;
   interpolatedObjects: InterpolatedObject[];
   onViewportChange: (viewport: Viewport) => void;
 }
@@ -121,7 +124,7 @@ export function zoomToCameraDistance(zoom: number): number {
 // Canvas wrapper that wires wheel events to the zoom hook
 // ---------------------------------------------------------------------------
 
-function GlobeCanvas() {
+function GlobeCanvas({ layerGeoJSON }: { layerGeoJSON?: Record<string, FeatureCollection> }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   return (
@@ -138,7 +141,7 @@ function GlobeCanvas() {
       >
         <ambientLight intensity={0.4} />
         <directionalLight position={[5, 3, 5]} intensity={0.6} />
-        <GlobeMeshWithWheel containerRef={containerRef} />
+        <GlobeMeshWithWheel containerRef={containerRef} layerGeoJSON={layerGeoJSON} />
       </Canvas>
     </div>
   );
@@ -149,8 +152,10 @@ function GlobeCanvas() {
  */
 function GlobeMeshWithWheel({
   containerRef,
+  layerGeoJSON,
 }: {
   containerRef: React.RefObject<HTMLDivElement | null>;
+  layerGeoJSON?: Record<string, FeatureCollection>;
 }) {
   const meshRef = useRef<THREE.Mesh>(null);
   const { refs: arcballRefs, handlers } = useArcballRotation();
@@ -193,23 +198,91 @@ function GlobeMeshWithWheel({
     camera.position.z = zoomToCameraDistance(zoomRef.current);
   });
 
+  // Build line geometries from GeoJSON data
+  const vectorObjects = useMemo(() => {
+    if (!layerGeoJSON) return [];
+    const objects: THREE.Object3D[] = [];
+    const SPHERE_OFFSET = 1.002; // slightly above globe surface
+
+    for (const [_layerId, fc] of Object.entries(layerGeoJSON)) {
+      for (const feature of fc.features) {
+        const geom = feature.geometry;
+        let coordRings: [number, number][][] = [];
+
+        if (geom.type === 'LineString') {
+          coordRings = [geom.coordinates as [number, number][]];
+        } else if (geom.type === 'MultiLineString') {
+          coordRings = geom.coordinates as [number, number][][];
+        } else if (geom.type === 'Polygon') {
+          coordRings = geom.coordinates as [number, number][][];
+        } else if (geom.type === 'MultiPolygon') {
+          coordRings = (geom.coordinates as [number, number][][][]).flat();
+        } else if (geom.type === 'Point') {
+          // Render points as small spheres
+          const [lng, lat] = geom.coordinates as [number, number];
+          const pos = latLngToSpherePosition(lat, lng, SPHERE_OFFSET);
+          const dotGeom = new THREE.SphereGeometry(0.012, 8, 8);
+          const dotMat = new THREE.MeshBasicMaterial({ color: 0xffcc33 });
+          const dot = new THREE.Mesh(dotGeom, dotMat);
+          dot.position.copy(pos);
+          objects.push(dot);
+          continue;
+        } else {
+          continue;
+        }
+
+        for (const ring of coordRings) {
+          const pts: THREE.Vector3[] = [];
+          for (const coord of ring) {
+            const [lng, lat] = coord;
+            pts.push(latLngToSpherePosition(lat, lng, SPHERE_OFFSET));
+          }
+          const lineGeom = new THREE.BufferGeometry().setFromPoints(pts);
+          const lineMat = new THREE.LineBasicMaterial({ color: 0x4dff88, linewidth: 1.5 });
+          const lineObj = new THREE.Line(lineGeom, lineMat);
+          objects.push(lineObj);
+        }
+      }
+    }
+    return objects;
+  }, [layerGeoJSON]);
+
+  // Group ref for vector data — syncs rotation with the globe mesh
+  const vectorGroupRef = useRef<THREE.Group>(null);
+
+  // Keep vector group rotation in sync with globe
+  useFrame(() => {
+    if (vectorGroupRef.current && meshRef.current) {
+      vectorGroupRef.current.quaternion.copy(meshRef.current.quaternion);
+    }
+  });
+
   return (
-    <mesh
-      ref={meshRef}
-      onPointerDown={handlers.onPointerDown}
-      onPointerMove={handlers.onPointerMove}
-      onPointerUp={handlers.onPointerUp}
-    >
-      <sphereGeometry args={[1, 64, 64]} />
-      <shaderMaterial
-        vertexShader={vertexShader}
-        fragmentShader={fragmentShader}
-        uniforms={uniforms}
-        transparent
-        side={THREE.DoubleSide}
-        depthWrite={false}
-      />
-    </mesh>
+    <>
+      <mesh
+        ref={meshRef}
+        onPointerDown={handlers.onPointerDown}
+        onPointerMove={handlers.onPointerMove}
+        onPointerUp={handlers.onPointerUp}
+      >
+        <sphereGeometry args={[1, 64, 64]} />
+        <shaderMaterial
+          vertexShader={vertexShader}
+          fragmentShader={fragmentShader}
+          uniforms={uniforms}
+          transparent
+          side={THREE.DoubleSide}
+          depthWrite={false}
+        />
+      </mesh>
+
+      {/* Vector data rendered on the globe surface */}
+      <group ref={vectorGroupRef}>
+        {vectorObjects.map((obj, i) => (
+          <primitive key={i} object={obj} />
+        ))}
+      </group>
+    </>
   );
 }
 
@@ -218,11 +291,10 @@ function GlobeMeshWithWheel({
 // ---------------------------------------------------------------------------
 
 export default function GlobeRenderer({
-  // Props are accepted for future wiring; currently the core globe renders
-  // the transparent sphere with grid lines.
   layers: _layers,
+  layerGeoJSON,
   interpolatedObjects: _interpolatedObjects,
   onViewportChange: _onViewportChange,
 }: GlobeRendererProps) {
-  return <GlobeCanvas />;
+  return <GlobeCanvas layerGeoJSON={layerGeoJSON} />;
 }

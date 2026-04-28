@@ -21,6 +21,7 @@ import type {
   ObjectReference,
   EnabledLayer,
 } from './types';
+import type { FeatureCollection } from './types/geojson';
 import { MemoryManager } from './services/MemoryManager';
 import { TileLoader } from './services/TileLoader';
 import { buildKeyframes, interpolate } from './services/TransitionEngine';
@@ -29,6 +30,7 @@ import GlobeRenderer from './components/GlobeRenderer';
 import LayerManager from './components/LayerManager';
 import ViewControls from './components/ViewControls';
 import Layout from './components/Layout';
+import { MOCK_LAYERS, MOCK_GEOJSON } from './data/mockLayers';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -149,9 +151,18 @@ export default function App() {
       } catch (err) {
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : String(err);
-        setError(msg);
-        // On failure, app still renders with empty layers — user can retry
-        console.error('Failed to fetch layer metadata:', msg);
+        console.warn('API unavailable, using mock layer data:', msg);
+
+        // Fall back to mock data
+        setLayers(MOCK_LAYERS);
+        setLayerGroups([]);
+
+        // Enable layers that are marked enabled by default
+        const initialActive = new Set<string>();
+        for (const l of MOCK_LAYERS) {
+          if (l.enabled) initialActive.add(l.id);
+        }
+        setActiveLayerIds(initialActive);
       }
     }
 
@@ -202,6 +213,16 @@ export default function App() {
         .map((l) => ({ layerId: l.id, meta: l })),
     [layers, activeLayerIds],
   );
+
+  // Build a map of layerId → GeoJSON for all enabled layers (mock data)
+  const layerGeoJSON: Record<string, FeatureCollection> = useMemo(() => {
+    const result: Record<string, FeatureCollection> = {};
+    for (const el of enabledLayers) {
+      const data = MOCK_GEOJSON[el.layerId];
+      if (data) result[el.layerId] = data;
+    }
+    return result;
+  }, [enabledLayers]);
 
   // -----------------------------------------------------------------------
   // Viewport change → tile loading pipeline (Task 15.2)
@@ -330,6 +351,7 @@ export default function App() {
       globe={
         <GlobeRenderer
           layers={enabledLayers}
+          layerGeoJSON={layerGeoJSON}
           interpolatedObjects={interpolatedObjects}
           onViewportChange={handleViewportChange}
         />
