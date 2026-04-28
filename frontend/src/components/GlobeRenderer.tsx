@@ -309,27 +309,63 @@ function GlobeMeshWithWheel({
     }
   });
 
-  // --- Napoleon trail (line object from past waypoints up to current time) ---
+  // --- Napoleon trail (great-circle arcs along the sphere surface) ---
   const napoleonTrailLine = useMemo(() => {
     if (!napoleonTrajectory || !napoleonTime) return null;
     const SPHERE_OFFSET = 1.003;
-    const pastPoints: THREE.Vector3[] = [];
 
+    // Collect waypoints up to current time
+    const waypoints: { lat: number; lng: number }[] = [];
     for (const wp of napoleonTrajectory) {
       if (wp.timestamp > napoleonTime) break;
-      pastPoints.push(latLngToSpherePosition(wp.lat, wp.lng, SPHERE_OFFSET));
+      waypoints.push({ lat: wp.lat, lng: wp.lng });
     }
-
     // Add the interpolated current position as the last point
-    if (napoleonPosition && pastPoints.length > 0) {
-      pastPoints.push(
-        latLngToSpherePosition(napoleonPosition.lat, napoleonPosition.lng, SPHERE_OFFSET),
-      );
+    if (napoleonPosition && waypoints.length > 0) {
+      waypoints.push({ lat: napoleonPosition.lat, lng: napoleonPosition.lng });
+    }
+    if (waypoints.length < 2) return null;
+
+    // Subdivide each segment into a great-circle arc on the sphere
+    const ARC_SEGMENTS = 24; // subdivisions per waypoint pair
+    const allPoints: THREE.Vector3[] = [];
+
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      const a = latLngToSpherePosition(waypoints[i].lat, waypoints[i].lng, SPHERE_OFFSET);
+      const b = latLngToSpherePosition(waypoints[i + 1].lat, waypoints[i + 1].lng, SPHERE_OFFSET);
+
+      // Slerp between the two unit-sphere positions to follow the great circle
+      const va = a.clone().normalize();
+      const vb = b.clone().normalize();
+      const angle = Math.acos(Math.min(1, Math.max(-1, va.dot(vb))));
+
+      // For very short segments, skip subdivision
+      const steps = angle < 0.01 ? 1 : ARC_SEGMENTS;
+
+      for (let s = 0; s <= (i === waypoints.length - 2 ? steps : steps - 1); s++) {
+        const t = s / steps;
+        let point: THREE.Vector3;
+
+        if (angle < 1e-6) {
+          // Points are essentially the same — just use a
+          point = a.clone();
+        } else {
+          // Spherical linear interpolation (slerp)
+          const sinAngle = Math.sin(angle);
+          const factorA = Math.sin((1 - t) * angle) / sinAngle;
+          const factorB = Math.sin(t * angle) / sinAngle;
+          point = new THREE.Vector3(
+            va.x * factorA + vb.x * factorB,
+            va.y * factorA + vb.y * factorB,
+            va.z * factorA + vb.z * factorB,
+          ).multiplyScalar(SPHERE_OFFSET);
+        }
+
+        allPoints.push(point);
+      }
     }
 
-    if (pastPoints.length < 2) return null;
-
-    const geom = new THREE.BufferGeometry().setFromPoints(pastPoints);
+    const geom = new THREE.BufferGeometry().setFromPoints(allPoints);
     const mat = new THREE.LineBasicMaterial({ color: 0xff6b35, transparent: true, opacity: 0.7 });
     return new THREE.Line(geom, mat);
   }, [napoleonTrajectory, napoleonTime, napoleonPosition]);
