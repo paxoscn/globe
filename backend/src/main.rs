@@ -1,6 +1,9 @@
+#![recursion_limit = "512"]
+
 mod entities;
 mod routes;
 mod schema;
+mod seed;
 mod services;
 
 use axum::{routing::get, Router};
@@ -30,6 +33,11 @@ async fn main() {
     schema::create_tables(&db)
         .await
         .expect("failed to create tables");
+
+    // Seed mock data
+    seed::seed(&db)
+        .await
+        .expect("failed to seed database");
 
     let state = AppState { db };
 

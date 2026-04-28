@@ -14,6 +14,10 @@ pub struct Model {
     pub group_id: Option<String>,
     pub order_in_group: i32,
     pub created_at: DateTimeUtc,
+    /// Optional timeline configuration as JSON.
+    /// Shape: { "startYear": number, "endYear": number, "formatType": "geological" | "historical" }
+    #[sea_orm(column_type = "JsonBinary", nullable)]
+    pub timeline_config: Option<serde_json::Value>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

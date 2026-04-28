@@ -50,6 +50,8 @@ pub struct LayerResponse {
     pub group_id: Option<String>,
     pub lod_levels: Vec<i32>,
     pub object_refs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeline_config: Option<serde_json::Value>,
 }
 
 /// A layer group entry in the GET /api/layers response.
@@ -155,6 +157,7 @@ pub async fn get_all_layers(
                 group_id: layer.group_id.clone(),
                 lod_levels,
                 object_refs,
+                timeline_config: layer.timeline_config.clone(),
             }
         })
         .collect();
@@ -279,6 +282,7 @@ mod tests {
             group_id: Set(Some("historical-coastlines".to_string())),
             order_in_group: Set(0),
             created_at: Set(chrono::Utc::now()),
+            timeline_config: Set(None),
         }
         .insert(&db)
         .await
@@ -291,6 +295,7 @@ mod tests {
             group_id: Set(Some("historical-coastlines".to_string())),
             order_in_group: Set(1),
             created_at: Set(chrono::Utc::now()),
+            timeline_config: Set(None),
         }
         .insert(&db)
         .await
@@ -359,6 +364,7 @@ mod tests {
             group_id: Set(Some("grp".to_string())),
             order_in_group: Set(0),
             created_at: Set(chrono::Utc::now()),
+            timeline_config: Set(None),
         }
         .insert(&db)
         .await

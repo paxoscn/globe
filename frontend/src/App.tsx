@@ -62,6 +62,11 @@ interface ApiLayerResponse {
   lod_levels: number[];
   object_refs?: string[];
   description?: string;
+  timeline_config?: {
+    startYear: number;
+    endYear: number;
+    formatType: 'geological' | 'historical';
+  } | null;
 }
 
 interface ApiGroupResponse {
@@ -96,6 +101,7 @@ function parseLayerMetadata(data: ApiLayersResponse): {
       description: l.description ?? '',
       enabled: false,
       lodLevels: l.lod_levels,
+      timelineConfig: l.timeline_config ?? undefined,
     };
     layerMap.set(l.id, meta);
   }
