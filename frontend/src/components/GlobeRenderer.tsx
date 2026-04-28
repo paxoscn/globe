@@ -103,16 +103,15 @@ const fragmentShader = /* glsl */ `
     vec3 viewDir = normalize(cameraPosition - vWorldPosition);
     float fresnel = pow(1.0 - abs(dot(viewDir, vNormal)), uFresnelPower);
 
-    // --- Lat/Lng grid ---
-    vec2 lonLat = toLonLat(vWorldPosition);
-    float grid = gridLine(lonLat, uGridLineWidth);
+    // --- Lat/Lng grid (disabled) ---
+    float grid = 0.0;
 
-    // Combine: base colour + grid overlay
+    // Combine: base colour
     vec3 baseColor = uGlobeColor;
-    vec3 color = mix(baseColor, uGridColor, grid * 0.8);
+    vec3 color = baseColor;
 
-    // Opacity: base transparency boosted at edges (Fresnel) and on grid lines
-    float alpha = uBaseOpacity + fresnel * (1.0 - uBaseOpacity) * 0.6 + grid * 0.25;
+    // Opacity: base transparency boosted at edges (Fresnel)
+    float alpha = uBaseOpacity + fresnel * (1.0 - uBaseOpacity) * 0.6;
     alpha = clamp(alpha, 0.0, 1.0);
 
     gl_FragColor = vec4(color, alpha);
@@ -223,7 +222,7 @@ function GlobeMeshWithWheel({
       uTime: { value: 0 },
       uGlobeColor: { value: new THREE.Color(0.15, 0.35, 0.65) },
       uGridColor: { value: new THREE.Color(0.5, 0.7, 1.0) },
-      uGridLineWidth: { value: 0.4 },
+      uGridLineWidth: { value: 0.0 },
       uFresnelPower: { value: 2.5 },
       uBaseOpacity: { value: 0.12 },
     }),
