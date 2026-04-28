@@ -1,15 +1,9 @@
 /**
  * App — Root component for the Vector Globe Viewer.
  *
- * Initializes application state, fetches layer metadata, and wires together:
- * - GlobeRenderer (3D globe with vector data)
- * - LayerManager (layer list, toggles, group sliders, inline timeline sliders)
- * - ViewControls (reset orientation / zoom buttons)
- * - Layout (responsive desktop sidebar / mobile drawer)
- * - TileLoader + MemoryManager (tile loading pipeline)
- * - TransitionEngine (keyframe interpolation for layer group slider)
- *
- * Requirements: 1.1, 5.1, 6.1, 6.3, 8.1, 9.1, 9.2, 9.3, 11.4, 11.5, 11.8
+ * All layer metadata and tile data come from the backend API.
+ * No layer-specific logic — layers are treated generically based on
+ * their `timelineConfig` from the API response.
  */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
@@ -20,6 +14,7 @@ import type {
   InterpolatedObject,
   ObjectReference,
   EnabledLayer,
+  TimelineConfig,
 } from './types';
 import type { FeatureCollection } from './types/geojson';
 import { MemoryManager } from './services/MemoryManager';
@@ -31,24 +26,16 @@ import type { GlobeHandle } from './components/GlobeRenderer';
 import LayerManager from './components/LayerManager';
 import ViewControls from './components/ViewControls';
 import Layout from './components/Layout';
-import {
-  NAPOLEON_LAYER_ID,
-  NAPOLEON_TRAJECTORY,
-  PRESENT_YEAR,
-  yearToMa,
-  yearToTimestamp,
-  interpolatePosition,
-} from './data/constants';
+import { PRESENT_YEAR, yearToMa } from './data/constants';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Debounce delay (ms) for viewport change events to avoid excessive tile requests. */
 const VIEWPORT_DEBOUNCE_MS = 150;
 
 // ---------------------------------------------------------------------------
-// API response types
+// API types
 // ---------------------------------------------------------------------------
 
 interface ApiLayerResponse {
@@ -58,18 +45,13 @@ interface ApiLayerResponse {
   lod_levels: number[];
   object_refs?: string[];
   description?: string;
-  timeline_config?: {
-    startYear: number;
-    endYear: number;
-    formatType: 'geological' | 'historical';
-  } | null;
+  timeline_config?: TimelineConfig | null;
 }
 
 interface ApiGroupResponse {
   id: string;
   name: string;
   layer_ids: string[];
-  description?: string;
 }
 
 interface ApiLayersResponse {
@@ -81,9 +63,6 @@ interface ApiLayersResponse {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Parse the API /api/layers response into LayerMeta[] and LayerGroupMeta[].
- */
 function parseLayerMetadata(data: ApiLayersResponse): {
   layers: LayerMeta[];
   layerGroups: LayerGroupMeta[];
@@ -91,15 +70,14 @@ function parseLayerMetadata(data: ApiLayersResponse): {
   const layerMap = new Map<string, LayerMeta>();
 
   for (const l of data.layers) {
-    const meta: LayerMeta = {
+    layerMap.set(l.id, {
       id: l.id,
       name: l.name,
       description: l.description ?? '',
       enabled: false,
       lodLevels: l.lod_levels,
       timelineConfig: l.timeline_config ?? undefined,
-    };
-    layerMap.set(l.id, meta);
+    });
   }
 
   const layerGroups: LayerGroupMeta[] = data.groups.map((g) => ({
@@ -111,86 +89,66 @@ function parseLayerMetadata(data: ApiLayersResponse): {
     currentPosition: 0,
   }));
 
-  return {
-    layers: Array.from(layerMap.values()),
-    layerGroups,
-  };
+  return { layers: Array.from(layerMap.values()), layerGroups };
+}
+
+/**
+ * Compute the integer time parameter for a layer's tile request
+ * based on the shared currentYear and the layer's timelineConfig.
+ * Returns undefined if the layer has no timeline.
+ */
+function computeTimeParam(
+  config: TimelineConfig | undefined,
+  currentYear: number,
+): number | undefined {
+  if (!config) return undefined;
+  if (config.formatType === 'geological') {
+    return Math.max(0, Math.round(yearToMa(currentYear)));
+  }
+  // For other timeline types (historical etc.), round to nearest year
+  return Math.round(currentYear);
 }
 
 // ---------------------------------------------------------------------------
-// App Component
+// App
 // ---------------------------------------------------------------------------
 
 export default function App() {
-  // -----------------------------------------------------------------------
-  // State
-  // -----------------------------------------------------------------------
-
   const [layers, setLayers] = useState<LayerMeta[]>([]);
   const [layerGroups, setLayerGroups] = useState<LayerGroupMeta[]>([]);
   const [activeLayerIds, setActiveLayerIds] = useState<Set<string>>(new Set());
   const [interpolatedObjects, setInterpolatedObjects] = useState<InterpolatedObject[]>([]);
-
-  // Shared absolute-year time coordinate.
-  // All layers share this single "current year" (CE).
-  // E.g. 1807 = year 1807, -300_000_000 = 300 Ma ago, 2026 = present.
   const [currentYear, setCurrentYear] = useState(PRESENT_YEAR);
 
-  // Derived per-layer native values from the shared currentYear
-  const napoleonEnabled = activeLayerIds.has(NAPOLEON_LAYER_ID);
-  const driftMa = yearToMa(currentYear);
-  const napoleonTime = yearToTimestamp(
-    Math.max(1796, Math.min(1815.99, currentYear)),
-  );
-
-  const napoleonPosition = useMemo(() => {
-    if (!napoleonEnabled) return null;
-    const pos = interpolatePosition(napoleonTime);
-    return { lat: pos.lat, lng: pos.lng, campaign: pos.campaign };
-  }, [napoleonTime, napoleonEnabled]);
-
-  // Refs for services (stable across renders)
   const memoryManagerRef = useRef<MemoryManager>(new MemoryManager());
   const tileLoaderRef = useRef<TileLoader>(new TileLoader(memoryManagerRef.current));
   const viewportRef = useRef<Viewport | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const globeRef = useRef<GlobeHandle>(null);
-
-  // Object references per layer group (fetched alongside layer metadata)
   const objectRefsRef = useRef<Map<string, ObjectRefMap>>(new Map());
 
   // -----------------------------------------------------------------------
-  // Fetch layer metadata on mount
+  // Fetch layer metadata
   // -----------------------------------------------------------------------
 
   useEffect(() => {
     let cancelled = false;
-
-    async function fetchLayers() {
+    (async () => {
       try {
-        const response = await fetch('/api/layers');
-        if (!response.ok) {
-          throw new Error(`Failed to fetch layers: ${response.status}`);
-        }
-        const data: ApiLayersResponse = await response.json();
+        const res = await fetch('/api/layers');
+        if (!res.ok) throw new Error(`${res.status}`);
+        const data: ApiLayersResponse = await res.json();
         if (cancelled) return;
-
-        const { layers: parsedLayers, layerGroups: parsedGroups } =
-          parseLayerMetadata(data);
-
-        setLayers(parsedLayers);
-        setLayerGroups(parsedGroups);
+        const { layers: l, layerGroups: g } = parseLayerMetadata(data);
+        setLayers(l);
+        setLayerGroups(g);
       } catch (err) {
-        if (cancelled) return;
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error('Failed to fetch layer metadata:', msg);
+        if (!cancelled) {
+          console.error('Failed to fetch layer metadata:', err instanceof Error ? err.message : err);
+        }
       }
-    }
-
-    fetchLayers();
-    return () => {
-      cancelled = true;
-    };
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   // -----------------------------------------------------------------------
@@ -200,211 +158,126 @@ export default function App() {
   const handleLayerToggle = useCallback((layerId: string, enabled: boolean) => {
     setActiveLayerIds((prev) => {
       const next = new Set(prev);
-      if (enabled) {
-        next.add(layerId);
-      } else {
-        next.delete(layerId);
-      }
+      enabled ? next.add(layerId) : next.delete(layerId);
       return next;
     });
-
-    setLayers((prev) =>
-      prev.map((l) => (l.id === layerId ? { ...l, enabled } : l)),
-    );
-
-    // Also update layers inside layer groups
+    setLayers((prev) => prev.map((l) => (l.id === layerId ? { ...l, enabled } : l)));
     setLayerGroups((prev) =>
       prev.map((g) => ({
         ...g,
-        layers: g.layers.map((l) =>
-          l.id === layerId ? { ...l, enabled } : l,
-        ),
+        layers: g.layers.map((l) => (l.id === layerId ? { ...l, enabled } : l)),
       })),
     );
   }, []);
 
   // -----------------------------------------------------------------------
-  // Enabled layers derived from state
+  // Enabled layers
   // -----------------------------------------------------------------------
 
   const enabledLayers: EnabledLayer[] = useMemo(
-    () =>
-      layers
-        .filter((l) => activeLayerIds.has(l.id))
-        .map((l) => ({ layerId: l.id, meta: l })),
+    () => layers.filter((l) => activeLayerIds.has(l.id)).map((l) => ({ layerId: l.id, meta: l })),
     [layers, activeLayerIds],
   );
 
-  // Tile data fetched from backend, keyed by `layerId` or `layerId:time` for time-indexed layers
+  // -----------------------------------------------------------------------
+  // Tile data — all layers fetched from /api/tiles/{id}/0/0/0[?time=N]
+  // -----------------------------------------------------------------------
+
   const [tileDataMap, setTileDataMap] = useState<Record<string, FeatureCollection>>({});
   const tileCacheRef = useRef<Map<string, FeatureCollection>>(new Map());
 
-  // Compute the time parameter (snapped Ma) for layers with geological timeline
-  const snappedMa = Math.max(0, Math.round(driftMa));
-
-  // Fetch tiles for all enabled layers via the standard tile API
-  // Layers with a timelineConfig get `?time=` appended
   useEffect(() => {
     for (const el of enabledLayers) {
-      const hasTimeline = !!el.meta.timelineConfig;
-      const isGeo = el.meta.timelineConfig?.formatType === 'geological';
+      const timeParam = computeTimeParam(el.meta.timelineConfig, currentYear);
+      const cacheKey = timeParam !== undefined ? `${el.layerId}:${timeParam}` : el.layerId;
 
-      // Build cache key: for time-indexed layers include the time value
-      const cacheKey = hasTimeline && isGeo
-        ? `${el.layerId}:${snappedMa}`
-        : el.layerId;
-
-      // Already in cache — update state if needed
       const cached = tileCacheRef.current.get(cacheKey);
       if (cached) {
-        setTileDataMap((prev) => {
-          if (prev[el.layerId] === cached) return prev;
-          return { ...prev, [el.layerId]: cached };
-        });
+        setTileDataMap((prev) => (prev[el.layerId] === cached ? prev : { ...prev, [el.layerId]: cached }));
         continue;
       }
 
-      // Build URL: standard tile endpoint + optional time param
-      let url = `/api/tiles/${el.layerId}/0/0/0`;
-      if (hasTimeline && isGeo) {
-        url += `?time=${snappedMa}`;
-      }
+      const url = timeParam !== undefined
+        ? `/api/tiles/${el.layerId}/0/0/0?time=${timeParam}`
+        : `/api/tiles/${el.layerId}/0/0/0`;
 
       fetch(url)
-        .then((res) => {
-          if (!res.ok) throw new Error(`${res.status}`);
-          return res.json() as Promise<FeatureCollection>;
-        })
+        .then((res) => { if (!res.ok) throw new Error(`${res.status}`); return res.json() as Promise<FeatureCollection>; })
         .then((data) => {
           tileCacheRef.current.set(cacheKey, data);
           setTileDataMap((prev) => ({ ...prev, [el.layerId]: data }));
         })
-        .catch(() => {
-          // No data for this time — don't update, keep previous data
-        });
+        .catch(() => { /* no data for this time — keep previous */ });
     }
-  }, [enabledLayers, snappedMa]);
+  }, [enabledLayers, currentYear]);
 
-  // Build a map of layerId → GeoJSON for all enabled layers
   const layerGeoJSON: Record<string, FeatureCollection> = useMemo(() => {
     const result: Record<string, FeatureCollection> = {};
     for (const el of enabledLayers) {
-      const data = tileDataMap[el.layerId];
-      if (data) result[el.layerId] = data;
+      const d = tileDataMap[el.layerId];
+      if (d) result[el.layerId] = d;
     }
     return result;
   }, [enabledLayers, tileDataMap]);
 
   // -----------------------------------------------------------------------
-  // Viewport change → tile loading pipeline (Task 15.2)
+  // Viewport → tile loading pipeline
   // -----------------------------------------------------------------------
 
   const handleViewportChange = useCallback(
     (viewport: Viewport) => {
       viewportRef.current = viewport;
-
-      // Debounce to avoid excessive tile requests
-      if (debounceTimerRef.current !== null) {
-        clearTimeout(debounceTimerRef.current);
-      }
+      if (debounceTimerRef.current !== null) clearTimeout(debounceTimerRef.current);
 
       debounceTimerRef.current = setTimeout(() => {
         const vp = viewportRef.current;
         if (!vp) return;
-
-        // Run eviction on viewport change
         memoryManagerRef.current.evictOutOfViewport(vp);
-
-        // For each enabled layer, load visible tiles
-        const visibleTiles = vp.visibleTiles;
+        const { visibleTiles } = vp;
         if (visibleTiles.length === 0) return;
 
-        // Compute viewport center for tile prioritization
-        const centerLat =
-          visibleTiles.reduce((sum, t) => {
-            const n = 1 << t.z;
-            const latRad = Math.atan(
-              Math.sinh(Math.PI * (1 - (2 * (t.y + 0.5)) / n)),
-            );
-            return sum + (latRad * 180) / Math.PI;
-          }, 0) / visibleTiles.length;
+        const centerLat = visibleTiles.reduce((s, t) => {
+          const n = 1 << t.z;
+          return s + (Math.atan(Math.sinh(Math.PI * (1 - (2 * (t.y + 0.5)) / n))) * 180) / Math.PI;
+        }, 0) / visibleTiles.length;
+        const centerLng = visibleTiles.reduce((s, t) => {
+          const n = 1 << t.z;
+          return s + ((t.x + 0.5) / n) * 360 - 180;
+        }, 0) / visibleTiles.length;
 
-        const centerLng =
-          visibleTiles.reduce((sum, t) => {
-            const n = 1 << t.z;
-            return sum + ((t.x + 0.5) / n) * 360 - 180;
-          }, 0) / visibleTiles.length;
-
-        const center = { lat: centerLat, lng: centerLng };
-
-        // Load tiles for each enabled layer
         for (const el of enabledLayers) {
-          tileLoaderRef.current.loadTiles(
-            el.layerId,
-            visibleTiles,
-            center,
-          );
+          tileLoaderRef.current.loadTiles(el.layerId, visibleTiles, { lat: centerLat, lng: centerLng });
         }
       }, VIEWPORT_DEBOUNCE_MS);
     },
     [enabledLayers],
   );
 
-  // Cleanup debounce timer on unmount
-  useEffect(() => {
-    return () => {
-      if (debounceTimerRef.current !== null) {
-        clearTimeout(debounceTimerRef.current);
-      }
-    };
-  }, []);
+  useEffect(() => () => { if (debounceTimerRef.current !== null) clearTimeout(debounceTimerRef.current); }, []);
 
   // -----------------------------------------------------------------------
-  // Layer group slider → TransitionEngine (Task 15.3)
+  // Layer group slider → TransitionEngine
   // -----------------------------------------------------------------------
 
   const handleGroupSliderChange = useCallback(
     (groupId: string, position: number) => {
-      // Update the group's currentPosition
-      setLayerGroups((prev) =>
-        prev.map((g) =>
-          g.id === groupId ? { ...g, currentPosition: position } : g,
-        ),
-      );
-
-      // Find the group
+      setLayerGroups((prev) => prev.map((g) => (g.id === groupId ? { ...g, currentPosition: position } : g)));
       const group = layerGroups.find((g) => g.id === groupId);
       if (!group) return;
-
-      const updatedGroup = { ...group, currentPosition: position };
-
-      // Get or build object references for this group
       let objRefs = objectRefsRef.current.get(groupId);
-      if (!objRefs) {
-        objRefs = new Map<string, ObjectReference[]>();
-        objectRefsRef.current.set(groupId, objRefs);
-      }
-
-      // Build keyframes and interpolate
-      const sequences = buildKeyframes(updatedGroup, objRefs);
-      const interpolated = interpolate(sequences, position);
-
-      setInterpolatedObjects(interpolated);
+      if (!objRefs) { objRefs = new Map<string, ObjectReference[]>(); objectRefsRef.current.set(groupId, objRefs); }
+      const sequences = buildKeyframes({ ...group, currentPosition: position }, objRefs);
+      setInterpolatedObjects(interpolate(sequences, position));
     },
     [layerGroups],
   );
 
   // -----------------------------------------------------------------------
-  // View reset callbacks
+  // View reset
   // -----------------------------------------------------------------------
 
-  const handleResetOrientation = useCallback(() => {
-    globeRef.current?.resetOrientation();
-  }, []);
-
-  const handleResetZoom = useCallback(() => {
-    globeRef.current?.resetZoom();
-  }, []);
+  const handleResetOrientation = useCallback(() => globeRef.current?.resetOrientation(), []);
+  const handleResetZoom = useCallback(() => globeRef.current?.resetZoom(), []);
 
   // -----------------------------------------------------------------------
   // Render
@@ -419,9 +292,6 @@ export default function App() {
           layerGeoJSON={layerGeoJSON}
           interpolatedObjects={interpolatedObjects}
           onViewportChange={handleViewportChange}
-          napoleonPosition={napoleonEnabled ? napoleonPosition : null}
-          napoleonTrajectory={napoleonEnabled ? NAPOLEON_TRAJECTORY : undefined}
-          napoleonTime={napoleonEnabled ? napoleonTime : undefined}
         />
       }
       layerPanel={
