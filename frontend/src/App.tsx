@@ -27,6 +27,7 @@ import { TileLoader } from './services/TileLoader';
 import { buildKeyframes, interpolate } from './services/TransitionEngine';
 import type { ObjectRefMap } from './services/TransitionEngine';
 import GlobeRenderer from './components/GlobeRenderer';
+import type { GlobeHandle } from './components/GlobeRenderer';
 import LayerManager from './components/LayerManager';
 import ViewControls from './components/ViewControls';
 import Layout from './components/Layout';
@@ -123,6 +124,7 @@ export default function App() {
   const tileLoaderRef = useRef<TileLoader>(new TileLoader(memoryManagerRef.current));
   const viewportRef = useRef<Viewport | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const globeRef = useRef<GlobeHandle>(null);
 
   // Object references per layer group (fetched alongside layer metadata)
   const objectRefsRef = useRef<Map<string, ObjectRefMap>>(new Map());
@@ -333,13 +335,11 @@ export default function App() {
   // -----------------------------------------------------------------------
 
   const handleResetOrientation = useCallback(() => {
-    // The actual reset is handled inside GlobeRenderer's arcball hook.
-    // This callback is a no-op placeholder — in a full implementation,
-    // we'd expose a ref or context to trigger the reset.
+    globeRef.current?.resetOrientation();
   }, []);
 
   const handleResetZoom = useCallback(() => {
-    // Same as above — zoom reset is handled inside GlobeRenderer.
+    globeRef.current?.resetZoom();
   }, []);
 
   // -----------------------------------------------------------------------
@@ -350,6 +350,7 @@ export default function App() {
     <Layout
       globe={
         <GlobeRenderer
+          ref={globeRef}
           layers={enabledLayers}
           layerGeoJSON={layerGeoJSON}
           interpolatedObjects={interpolatedObjects}

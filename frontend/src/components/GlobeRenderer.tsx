@@ -5,7 +5,7 @@
  * Requirements: 1.1 (transparent globe), 1.2 (lat/lng grid), 1.3 (≥30fps)
  */
 
-import { useRef, useMemo, useEffect } from 'react';
+import { useRef, useMemo, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { EnabledLayer, InterpolatedObject, Viewport } from '../types';
@@ -23,6 +23,12 @@ export interface GlobeRendererProps {
   layerGeoJSON?: Record<string, FeatureCollection>;
   interpolatedObjects: InterpolatedObject[];
   onViewportChange: (viewport: Viewport) => void;
+}
+
+/** Imperative handle exposed by GlobeRenderer via React.forwardRef. */
+export interface GlobeHandle {
+  resetOrientation: () => void;
+  resetZoom: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +130,7 @@ export function zoomToCameraDistance(zoom: number): number {
 // Canvas wrapper that wires wheel events to the zoom hook
 // ---------------------------------------------------------------------------
 
-function GlobeCanvas({ layerGeoJSON }: { layerGeoJSON?: Record<string, FeatureCollection> }) {
+function GlobeCanvas({ layerGeoJSON, globeRef }: { layerGeoJSON?: Record<string, FeatureCollection>; globeRef?: React.Ref<GlobeHandle> }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   return (
@@ -141,7 +147,7 @@ function GlobeCanvas({ layerGeoJSON }: { layerGeoJSON?: Record<string, FeatureCo
       >
         <ambientLight intensity={0.4} />
         <directionalLight position={[5, 3, 5]} intensity={0.6} />
-        <GlobeMeshWithWheel containerRef={containerRef} layerGeoJSON={layerGeoJSON} />
+        <GlobeMeshWithWheel containerRef={containerRef} layerGeoJSON={layerGeoJSON} globeRef={globeRef} />
       </Canvas>
     </div>
   );
@@ -153,18 +159,26 @@ function GlobeCanvas({ layerGeoJSON }: { layerGeoJSON?: Record<string, FeatureCo
 function GlobeMeshWithWheel({
   containerRef,
   layerGeoJSON,
+  globeRef,
 }: {
   containerRef: React.RefObject<HTMLDivElement | null>;
   layerGeoJSON?: Record<string, FeatureCollection>;
+  globeRef?: React.Ref<GlobeHandle>;
 }) {
   const meshRef = useRef<THREE.Mesh>(null);
-  const { refs: arcballRefs, handlers } = useArcballRotation();
-  const { zoomRef, onWheel } = useZoom({
+  const { refs: arcballRefs, handlers, reset: resetOrientation } = useArcballRotation();
+  const { zoomRef, onWheel, reset: resetZoom } = useZoom({
     minZoom: DEFAULT_MIN_ZOOM,
     maxZoom: DEFAULT_MAX_ZOOM,
     initialZoom: DEFAULT_ZOOM,
   });
   const { camera } = useThree();
+
+  // Expose reset methods to the parent via the forwarded ref
+  useImperativeHandle(globeRef, () => ({
+    resetOrientation,
+    resetZoom,
+  }), [resetOrientation, resetZoom]);
 
   const uniforms = useMemo(
     () => ({
@@ -290,11 +304,16 @@ function GlobeMeshWithWheel({
 // Public Component
 // ---------------------------------------------------------------------------
 
-export default function GlobeRenderer({
-  layers: _layers,
-  layerGeoJSON,
-  interpolatedObjects: _interpolatedObjects,
-  onViewportChange: _onViewportChange,
-}: GlobeRendererProps) {
-  return <GlobeCanvas layerGeoJSON={layerGeoJSON} />;
-}
+const GlobeRenderer = forwardRef<GlobeHandle, GlobeRendererProps>(function GlobeRenderer(
+  {
+    layers: _layers,
+    layerGeoJSON,
+    interpolatedObjects: _interpolatedObjects,
+    onViewportChange: _onViewportChange,
+  },
+  ref,
+) {
+  return <GlobeCanvas layerGeoJSON={layerGeoJSON} globeRef={ref} />;
+});
+
+export default GlobeRenderer;
