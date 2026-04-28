@@ -13,7 +13,7 @@ import type { FeatureCollection } from '../types/geojson';
 import { useArcballRotation } from '../hooks/useArcballRotation';
 import { useZoom, DEFAULT_MIN_ZOOM, DEFAULT_MAX_ZOOM, DEFAULT_ZOOM } from '../hooks/useZoom';
 import { latLngToSpherePosition } from '../utils/geojsonRenderer';
-import type { NapoleonWaypoint } from '../data/napoleonTrajectory';
+import type { NapoleonWaypoint } from '../data/constants';
 
 // ---------------------------------------------------------------------------
 // Props

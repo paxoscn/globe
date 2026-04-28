@@ -162,7 +162,7 @@ describe('App', () => {
 
   it('handles fetch failure gracefully', async () => {
     fetchSpy.mockRejectedValueOnce(new Error('Network error'));
-    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const { getByTestId } = render(<App />);
 
@@ -171,7 +171,7 @@ describe('App', () => {
 
     await waitFor(() => {
       expect(consoleSpy).toHaveBeenCalledWith(
-        'API unavailable, using mock layer data:',
+        'Failed to fetch layer metadata:',
         'Network error',
       );
     });

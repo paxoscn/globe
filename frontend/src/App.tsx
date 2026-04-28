@@ -32,17 +32,13 @@ import LayerManager from './components/LayerManager';
 import ViewControls from './components/ViewControls';
 import Layout from './components/Layout';
 import {
-  MOCK_LAYERS,
-  MOCK_GEOJSON,
   NAPOLEON_LAYER_ID,
   NAPOLEON_TRAJECTORY,
-  TRAJECTORY_START,
   PRESENT_YEAR,
   yearToMa,
   yearToTimestamp,
   interpolatePosition,
-  interpolateContinents,
-} from './data/mockLayers';
+} from './data/constants';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -134,7 +130,6 @@ export default function App() {
   const [layerGroups, setLayerGroups] = useState<LayerGroupMeta[]>([]);
   const [activeLayerIds, setActiveLayerIds] = useState<Set<string>>(new Set());
   const [interpolatedObjects, setInterpolatedObjects] = useState<InterpolatedObject[]>([]);
-  const [, setError] = useState<string | null>(null);
 
   // Shared absolute-year time coordinate.
   // All layers share this single "current year" (CE).
@@ -188,18 +183,7 @@ export default function App() {
       } catch (err) {
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : String(err);
-        console.warn('API unavailable, using mock layer data:', msg);
-
-        // Fall back to mock data
-        setLayers(MOCK_LAYERS);
-        setLayerGroups([]);
-
-        // Enable layers that are marked enabled by default
-        const initialActive = new Set<string>();
-        for (const l of MOCK_LAYERS) {
-          if (l.enabled) initialActive.add(l.id);
-        }
-        setActiveLayerIds(initialActive);
+        console.error('Failed to fetch layer metadata:', msg);
       }
     }
 
@@ -251,21 +235,65 @@ export default function App() {
     [layers, activeLayerIds],
   );
 
-  // Build a map of layerId → GeoJSON for all enabled layers (mock data)
-  // For world-borders, apply continental drift interpolation when driftMa > 0
+  // Tile data fetched from backend, keyed by layerId
+  const [tileDataMap, setTileDataMap] = useState<Record<string, FeatureCollection>>({});
+  const coastlineCacheRef = useRef<Map<number, FeatureCollection>>(new Map());
+
+  // Fetch coastline tile from backend when driftMa changes
+  const worldBordersEnabled = activeLayerIds.has('world-borders');
+  const snappedMa = Math.max(0, Math.round(driftMa));
+  useEffect(() => {
+    if (!worldBordersEnabled) return;
+
+    const cached = coastlineCacheRef.current.get(snappedMa);
+    if (cached) {
+      setTileDataMap((prev) => ({ ...prev, 'world-borders': cached }));
+      return;
+    }
+
+    let cancelled = false;
+    fetch(`/api/tiles/world-borders/${snappedMa}/0/0`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`${res.status}`);
+        return res.json() as Promise<FeatureCollection>;
+      })
+      .then((data) => {
+        if (cancelled) return;
+        coastlineCacheRef.current.set(snappedMa, data);
+        setTileDataMap((prev) => ({ ...prev, 'world-borders': data }));
+      })
+      .catch(() => {});
+
+    return () => { cancelled = true; };
+  }, [snappedMa, worldBordersEnabled]);
+
+  // Fetch z=0 tile for other enabled layers (cities, napoleon, etc.)
+  useEffect(() => {
+    for (const el of enabledLayers) {
+      if (el.layerId === 'world-borders') continue; // handled above
+      if (tileDataMap[el.layerId]) continue; // already loaded
+
+      fetch(`/api/tiles/${el.layerId}/0/0/0`)
+        .then((res) => {
+          if (!res.ok) throw new Error(`${res.status}`);
+          return res.json() as Promise<FeatureCollection>;
+        })
+        .then((data) => {
+          setTileDataMap((prev) => ({ ...prev, [el.layerId]: data }));
+        })
+        .catch(() => {});
+    }
+  }, [enabledLayers, tileDataMap]);
+
+  // Build a map of layerId → GeoJSON for all enabled layers
   const layerGeoJSON: Record<string, FeatureCollection> = useMemo(() => {
     const result: Record<string, FeatureCollection> = {};
     for (const el of enabledLayers) {
-      if (el.layerId === 'world-borders') {
-        // Use drift-interpolated continents
-        result[el.layerId] = interpolateContinents(driftMa);
-      } else {
-        const data = MOCK_GEOJSON[el.layerId];
-        if (data) result[el.layerId] = data;
-      }
+      const data = tileDataMap[el.layerId];
+      if (data) result[el.layerId] = data;
     }
     return result;
-  }, [enabledLayers, driftMa]);
+  }, [enabledLayers, tileDataMap]);
 
   // -----------------------------------------------------------------------
   // Viewport change → tile loading pipeline (Task 15.2)

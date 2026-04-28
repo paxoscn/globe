@@ -21,14 +21,12 @@ import {
   maToYear,
   yearToTimestamp,
   timestampToYear,
-  DRIFT_MAX_MA,
-  DRIFT_MIN_MA,
   NAPOLEON_TRAJECTORY,
   TRAJECTORY_START,
   TRAJECTORY_END,
   CAMPAIGN_COLORS,
   interpolatePosition,
-} from '../data/mockLayers';
+} from '../data/constants';
 
 // ---------------------------------------------------------------------------
 // Props

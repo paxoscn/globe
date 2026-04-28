@@ -1,34 +1,37 @@
-//! Seed the in-memory database with mock data matching the frontend's
-//! `mockLayers.ts`. This gives the backend real data to serve so the
-//! frontend can fetch from `/api/layers` and `/api/tiles/…` instead of
-//! falling back to its local mock data.
+//! Seed the in-memory database with layer data.
+//!
+//! - Coastline data: reads GeoJSON files from `data/coastlines/{Ma}Ma.json`
+//!   (sourced from GPlates Web Service, MULLER2022 model). Each file is stored
+//!   as a tile with z=Ma, x=0, y=0 on the `world-borders` layer.
+//! - Cities and Napoleon trajectory: inline GeoJSON.
+//! - Napoleon object + waypoint references.
 
 use sea_orm::{ActiveModelTrait, DatabaseConnection, DbErr, Set};
 use serde_json::json;
+use std::path::Path;
 
 use crate::entities::{layers, objects, object_references, tiles};
 
-/// Insert all mock layers, tiles, and objects into the database.
+/// Insert all layers, tiles, and objects into the database.
 pub async fn seed(db: &DatabaseConnection) -> Result<(), DbErr> {
     seed_layers(db).await?;
-    seed_tiles(db).await?;
+    seed_coastline_tiles(db).await?;
+    seed_other_tiles(db).await?;
     seed_napoleon_object(db).await?;
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// Layers (no groups — all standalone)
+// Layers
 // ---------------------------------------------------------------------------
 
 async fn seed_layers(db: &DatabaseConnection) -> Result<(), DbErr> {
     let now = chrono::Utc::now();
 
-    // world-borders: geological timeline, 300 Ma ago → present (2026 CE)
-    // 300 Ma = 300_000_000 years ago → startYear = 2026 - 300_000_000 = -299_997_974
     layers::ActiveModel {
         id: Set("world-borders".into()),
         name: Set("大陆漂移 (0–300 Ma)".into()),
-        description: Set("Simplified outlines of major landmasses with continental drift".into()),
+        description: Set("Reconstructed coastlines from GPlates (MULLER2022 model)".into()),
         group_id: Set(None),
         order_in_group: Set(0),
         created_at: Set(now),
@@ -41,7 +44,6 @@ async fn seed_layers(db: &DatabaseConnection) -> Result<(), DbErr> {
     .insert(db)
     .await?;
 
-    // cities: no timeline
     layers::ActiveModel {
         id: Set("cities".into()),
         name: Set("Major Cities".into()),
@@ -54,7 +56,6 @@ async fn seed_layers(db: &DatabaseConnection) -> Result<(), DbErr> {
     .insert(db)
     .await?;
 
-    // napoleon-trajectory: historical timeline, 1796–1815 CE
     layers::ActiveModel {
         id: Set("napoleon-trajectory".into()),
         name: Set("拿破仑战役轨迹 (1796–1815)".into()),
@@ -75,50 +76,99 @@ async fn seed_layers(db: &DatabaseConnection) -> Result<(), DbErr> {
 }
 
 // ---------------------------------------------------------------------------
-// Tiles — one z=0 tile per layer with the full GeoJSON
+// Coastline tiles — read from data/coastlines/*.json
+// Each file {Ma}Ma.json → tile with z=Ma, x=0, y=0
 // ---------------------------------------------------------------------------
 
-async fn seed_tiles(db: &DatabaseConnection) -> Result<(), DbErr> {
-    // World borders
-    let world_borders_geojson = world_borders_geojson();
-    let wb_str = serde_json::to_string(&world_borders_geojson).unwrap();
-    tiles::ActiveModel {
-        id: sea_orm::NotSet,
-        layer_id: Set("world-borders".into()),
-        z: Set(0),
-        x: Set(0),
-        y: Set(0),
-        geojson: Set(world_borders_geojson),
-        size_bytes: Set(wb_str.len() as i32),
-    }
-    .insert(db)
-    .await?;
+async fn seed_coastline_tiles(db: &DatabaseConnection) -> Result<(), DbErr> {
+    let data_dir = Path::new("data/coastlines");
 
+    if !data_dir.exists() {
+        eprintln!("Warning: {} not found, skipping coastline seed", data_dir.display());
+        return Ok(());
+    }
+
+    let mut entries: Vec<_> = std::fs::read_dir(data_dir)
+        .map_err(|e| DbErr::Custom(format!("Failed to read coastline dir: {}", e)))?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "json")
+                .unwrap_or(false)
+        })
+        .collect();
+
+    // Sort for deterministic order
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in &entries {
+        let filename = entry.file_name();
+        let name = filename.to_string_lossy();
+
+        // Parse Ma value from filename like "100Ma.json"
+        let ma: i32 = name
+            .trim_end_matches("Ma.json")
+            .parse()
+            .map_err(|_| DbErr::Custom(format!("Invalid coastline filename: {}", name)))?;
+
+        let content = std::fs::read_to_string(entry.path())
+            .map_err(|e| DbErr::Custom(format!("Failed to read {}: {}", name, e)))?;
+
+        let geojson: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| DbErr::Custom(format!("Invalid JSON in {}: {}", name, e)))?;
+
+        let size_bytes = content.len() as i32;
+
+        tiles::ActiveModel {
+            id: sea_orm::NotSet,
+            layer_id: Set("world-borders".into()),
+            z: Set(ma as i16),
+            x: Set(0),
+            y: Set(0),
+            geojson: Set(geojson),
+            size_bytes: Set(size_bytes),
+        }
+        .insert(db)
+        .await?;
+
+        println!("  Seeded coastline tile: {} Ma ({} bytes)", ma, size_bytes);
+    }
+
+    println!("  Loaded {} coastline time steps", entries.len());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Other tiles (cities, napoleon)
+// ---------------------------------------------------------------------------
+
+async fn seed_other_tiles(db: &DatabaseConnection) -> Result<(), DbErr> {
     // Cities
-    let cities_geojson = cities_geojson();
-    let c_str = serde_json::to_string(&cities_geojson).unwrap();
+    let cities = cities_geojson();
+    let c_str = serde_json::to_string(&cities).unwrap();
     tiles::ActiveModel {
         id: sea_orm::NotSet,
         layer_id: Set("cities".into()),
         z: Set(0),
         x: Set(0),
         y: Set(0),
-        geojson: Set(cities_geojson),
+        geojson: Set(cities),
         size_bytes: Set(c_str.len() as i32),
     }
     .insert(db)
     .await?;
 
-    // Napoleon trajectory — store waypoints as a GeoJSON LineString + Points
-    let napoleon_geojson = napoleon_geojson();
-    let n_str = serde_json::to_string(&napoleon_geojson).unwrap();
+    // Napoleon trajectory
+    let napoleon = napoleon_geojson();
+    let n_str = serde_json::to_string(&napoleon).unwrap();
     tiles::ActiveModel {
         id: sea_orm::NotSet,
         layer_id: Set("napoleon-trajectory".into()),
         z: Set(0),
         x: Set(0),
         y: Set(0),
-        geojson: Set(napoleon_geojson),
+        geojson: Set(napoleon),
         size_bytes: Set(n_str.len() as i32),
     }
     .insert(db)
@@ -140,7 +190,6 @@ async fn seed_napoleon_object(db: &DatabaseConnection) -> Result<(), DbErr> {
     .insert(db)
     .await?;
 
-    // Insert a reference for each major campaign waypoint
     let waypoints = napoleon_waypoints();
     for wp in &waypoints {
         object_references::ActiveModel {
@@ -164,57 +213,8 @@ async fn seed_napoleon_object(db: &DatabaseConnection) -> Result<(), DbErr> {
 }
 
 // ---------------------------------------------------------------------------
-// GeoJSON data builders
+// Inline GeoJSON builders
 // ---------------------------------------------------------------------------
-
-fn world_borders_geojson() -> serde_json::Value {
-    json!({
-        "type": "FeatureCollection",
-        "features": [
-            { "type": "Feature", "properties": { "name": "North America" }, "geometry": { "type": "LineString", "coordinates": [
-                [-130,50],[-125,55],[-120,60],[-110,65],[-100,68],[-90,65],[-80,62],[-75,58],[-70,50],[-65,45],
-                [-70,42],[-75,38],[-80,32],[-82,28],[-85,25],[-90,28],[-95,28],[-100,30],[-105,32],[-110,32],
-                [-115,32],[-120,35],[-125,40],[-128,45],[-130,50]
-            ]}},
-            { "type": "Feature", "properties": { "name": "South America" }, "geometry": { "type": "LineString", "coordinates": [
-                [-80,10],[-75,10],[-70,12],[-62,10],[-55,5],[-50,0],[-48,-5],[-45,-10],[-40,-15],[-38,-20],
-                [-40,-25],[-48,-28],[-52,-32],[-55,-35],[-58,-38],[-65,-42],[-68,-48],[-70,-52],[-72,-50],[-72,-45],
-                [-70,-40],[-70,-35],[-70,-30],[-70,-25],[-70,-18],[-75,-12],[-78,-5],[-80,0],[-78,5],[-80,10]
-            ]}},
-            { "type": "Feature", "properties": { "name": "Europe" }, "geometry": { "type": "LineString", "coordinates": [
-                [-10,36],[-8,40],[-10,42],[-5,44],[0,43],[3,43],[5,44],[8,44],[12,42],[15,38],
-                [18,40],[22,38],[25,38],[28,40],[30,42],[32,45],[35,48],[30,52],[25,55],[20,55],
-                [18,58],[15,60],[10,58],[8,55],[5,52],[2,51],[0,50],[-5,48],[-8,44],[-10,36]
-            ]}},
-            { "type": "Feature", "properties": { "name": "Africa" }, "geometry": { "type": "LineString", "coordinates": [
-                [-15,30],[-17,22],[-17,15],[-15,10],[-10,5],[-5,5],[0,5],[5,4],[10,4],[10,0],
-                [12,-5],[15,-10],[20,-15],[25,-18],[30,-22],[32,-28],[28,-33],[22,-34],[18,-32],[15,-28],
-                [12,-18],[10,-10],[10,-2],[15,5],[20,10],[25,12],[30,15],[32,20],[35,30],[32,32],
-                [28,32],[20,32],[10,35],[5,36],[0,35],[-5,35],[-10,32],[-15,30]
-            ]}},
-            { "type": "Feature", "properties": { "name": "Asia" }, "geometry": { "type": "LineString", "coordinates": [
-                [35,30],[40,35],[45,38],[50,38],[55,35],[60,25],[65,25],[70,22],[75,15],[78,10],
-                [80,15],[85,22],[90,22],[95,18],[100,15],[105,20],[110,22],[115,25],[120,30],[125,35],
-                [130,38],[135,35],[140,38],[142,42],[145,45],[140,50],[135,55],[130,55],[120,55],[110,52],
-                [100,50],[90,48],[80,50],[70,52],[60,55],[50,52],[45,48],[40,42],[35,38],[35,30]
-            ]}},
-            { "type": "Feature", "properties": { "name": "Australia" }, "geometry": { "type": "LineString", "coordinates": [
-                [115,-20],[118,-18],[122,-15],[128,-14],[132,-12],[136,-12],[140,-15],[145,-15],
-                [148,-18],[150,-22],[152,-25],[153,-28],[150,-32],[148,-35],[145,-38],[140,-38],
-                [135,-35],[130,-32],[125,-32],[120,-30],[115,-32],[114,-28],[113,-25],[115,-20]
-            ]}},
-            { "type": "Feature", "properties": { "name": "Japan" }, "geometry": { "type": "LineString", "coordinates": [
-                [130,31],[131,33],[132,34],[134,34],[136,35],[138,35],[140,36],[141,38],
-                [140,40],[141,42],[142,43],[145,44],[144,43],[143,42],[141,40],[140,38],
-                [139,36],[137,35],[135,34],[133,33],[131,32],[130,31]
-            ]}},
-            { "type": "Feature", "properties": { "name": "British Isles" }, "geometry": { "type": "LineString", "coordinates": [
-                [-5,50],[-3,51],[0,51],[1,52],[1,53],[0,54],[-2,55],[-3,56],[-5,58],[-3,58],
-                [-2,57],[-1,56],[0,55],[-1,54],[-3,53],[-4,52],[-5,50]
-            ]}}
-        ]
-    })
-}
 
 fn cities_geojson() -> serde_json::Value {
     json!({
@@ -240,27 +240,17 @@ fn napoleon_geojson() -> serde_json::Value {
     let wps = napoleon_waypoints();
     let mut features: Vec<serde_json::Value> = Vec::new();
 
-    // Full trajectory as a LineString
-    let coords: Vec<serde_json::Value> = wps
-        .iter()
-        .map(|wp| json!([wp.lng, wp.lat]))
-        .collect();
+    let coords: Vec<serde_json::Value> = wps.iter().map(|wp| json!([wp.lng, wp.lat])).collect();
     features.push(json!({
         "type": "Feature",
         "properties": { "name": "Napoleon Trajectory" },
         "geometry": { "type": "LineString", "coordinates": coords }
     }));
 
-    // Each waypoint as a Point
     for wp in &wps {
         features.push(json!({
             "type": "Feature",
-            "properties": {
-                "name": wp.location,
-                "date": wp.date,
-                "event": wp.event,
-                "campaign": wp.campaign
-            },
+            "properties": { "name": wp.location, "date": wp.date, "event": wp.event, "campaign": wp.campaign },
             "geometry": { "type": "Point", "coordinates": [wp.lng, wp.lat] }
         }));
     }
@@ -268,18 +258,7 @@ fn napoleon_geojson() -> serde_json::Value {
     json!({ "type": "FeatureCollection", "features": features })
 }
 
-// ---------------------------------------------------------------------------
-// Napoleon waypoint data
-// ---------------------------------------------------------------------------
-
-struct Waypoint {
-    date: &'static str,
-    lat: f64,
-    lng: f64,
-    location: &'static str,
-    event: &'static str,
-    campaign: &'static str,
-}
+struct Waypoint { date: &'static str, lat: f64, lng: f64, location: &'static str, event: &'static str, campaign: &'static str }
 
 fn napoleon_waypoints() -> Vec<Waypoint> {
     vec![
