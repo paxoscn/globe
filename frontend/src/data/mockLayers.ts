@@ -11,6 +11,9 @@ import type { FeatureCollection } from '../types/geojson';
 // Layer metadata
 // ---------------------------------------------------------------------------
 
+/** Well-known layer ID for the Napoleon trajectory layer. */
+export const NAPOLEON_LAYER_ID = 'napoleon-trajectory';
+
 export const MOCK_LAYERS: LayerMeta[] = [
   {
     id: 'world-borders',
@@ -25,6 +28,13 @@ export const MOCK_LAYERS: LayerMeta[] = [
     description: 'Locations of major world cities',
     enabled: false,
     lodLevels: [0, 1],
+  },
+  {
+    id: NAPOLEON_LAYER_ID,
+    name: '拿破仑战役轨迹 (1796–1815)',
+    description: 'Napoleon campaign trajectory with timeline control',
+    enabled: false,
+    lodLevels: [0],
   },
 ];
 

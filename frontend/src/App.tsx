@@ -31,7 +31,7 @@ import type { GlobeHandle } from './components/GlobeRenderer';
 import LayerManager from './components/LayerManager';
 import ViewControls from './components/ViewControls';
 import Layout from './components/Layout';
-import { MOCK_LAYERS, MOCK_GEOJSON } from './data/mockLayers';
+import { MOCK_LAYERS, MOCK_GEOJSON, NAPOLEON_LAYER_ID } from './data/mockLayers';
 import {
   NAPOLEON_TRAJECTORY,
   TRAJECTORY_START,
@@ -127,10 +127,12 @@ export default function App() {
 
   // Napoleon timeline state
   const [napoleonTime, setNapoleonTime] = useState<number>(TRAJECTORY_START);
+  const napoleonEnabled = activeLayerIds.has(NAPOLEON_LAYER_ID);
   const napoleonPosition = useMemo(() => {
+    if (!napoleonEnabled) return null;
     const pos = interpolatePosition(napoleonTime);
     return { lat: pos.lat, lng: pos.lng, campaign: pos.campaign };
-  }, [napoleonTime]);
+  }, [napoleonTime, napoleonEnabled]);
 
   const handleNapoleonTimeChange = useCallback((timestamp: number) => {
     setNapoleonTime(timestamp);
@@ -372,9 +374,9 @@ export default function App() {
           layerGeoJSON={layerGeoJSON}
           interpolatedObjects={interpolatedObjects}
           onViewportChange={handleViewportChange}
-          napoleonPosition={napoleonPosition}
-          napoleonTrajectory={NAPOLEON_TRAJECTORY}
-          napoleonTime={napoleonTime}
+          napoleonPosition={napoleonEnabled ? napoleonPosition : null}
+          napoleonTrajectory={napoleonEnabled ? NAPOLEON_TRAJECTORY : undefined}
+          napoleonTime={napoleonEnabled ? napoleonTime : undefined}
         />
       }
       layerPanel={
@@ -391,10 +393,12 @@ export default function App() {
             onResetOrientation={handleResetOrientation}
             onResetZoom={handleResetZoom}
           />
-          <TimelineSlider
-            currentTime={napoleonTime}
-            onTimeChange={handleNapoleonTimeChange}
-          />
+          {napoleonEnabled && (
+            <TimelineSlider
+              currentTime={napoleonTime}
+              onTimeChange={handleNapoleonTimeChange}
+            />
+          )}
         </>
       }
     />
