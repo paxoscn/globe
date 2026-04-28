@@ -37,7 +37,9 @@ import {
   TRAJECTORY_START,
   interpolatePosition,
 } from './data/napoleonTrajectory';
+import { interpolateContinents } from './data/continentalDrift';
 import TimelineSlider from './components/TimelineSlider';
+import DriftTimelineSlider from './components/DriftTimelineSlider';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -138,6 +140,14 @@ export default function App() {
     setNapoleonTime(timestamp);
   }, []);
 
+  // Continental drift timeline state
+  const [driftMa, setDriftMa] = useState<number>(0); // 0 = present day
+  const worldBordersEnabled = activeLayerIds.has('world-borders');
+
+  const handleDriftTimeChange = useCallback((ma: number) => {
+    setDriftMa(ma);
+  }, []);
+
   // Refs for services (stable across renders)
   const memoryManagerRef = useRef<MemoryManager>(new MemoryManager());
   const tileLoaderRef = useRef<TileLoader>(new TileLoader(memoryManagerRef.current));
@@ -236,14 +246,20 @@ export default function App() {
   );
 
   // Build a map of layerId → GeoJSON for all enabled layers (mock data)
+  // For world-borders, apply continental drift interpolation when driftMa > 0
   const layerGeoJSON: Record<string, FeatureCollection> = useMemo(() => {
     const result: Record<string, FeatureCollection> = {};
     for (const el of enabledLayers) {
-      const data = MOCK_GEOJSON[el.layerId];
-      if (data) result[el.layerId] = data;
+      if (el.layerId === 'world-borders') {
+        // Use drift-interpolated continents
+        result[el.layerId] = interpolateContinents(driftMa);
+      } else {
+        const data = MOCK_GEOJSON[el.layerId];
+        if (data) result[el.layerId] = data;
+      }
     }
     return result;
-  }, [enabledLayers]);
+  }, [enabledLayers, driftMa]);
 
   // -----------------------------------------------------------------------
   // Viewport change → tile loading pipeline (Task 15.2)
@@ -393,12 +409,35 @@ export default function App() {
             onResetOrientation={handleResetOrientation}
             onResetZoom={handleResetZoom}
           />
-          {napoleonEnabled && (
-            <TimelineSlider
-              currentTime={napoleonTime}
-              onTimeChange={handleNapoleonTimeChange}
-            />
-          )}
+          <div style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            padding: 20,
+            paddingRight: 320,
+            pointerEvents: 'none',
+          }}>
+            {napoleonEnabled && (
+              <div style={{ pointerEvents: 'auto' }}>
+                <TimelineSlider
+                  currentTime={napoleonTime}
+                  onTimeChange={handleNapoleonTimeChange}
+                />
+              </div>
+            )}
+            {worldBordersEnabled && (
+              <div style={{ pointerEvents: 'auto' }}>
+                <DriftTimelineSlider
+                  currentMa={driftMa}
+                  onTimeChange={handleDriftTimeChange}
+                />
+              </div>
+            )}
+          </div>
         </>
       }
     />

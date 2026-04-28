@@ -247,10 +247,7 @@ export default function TimelineSlider({ onTimeChange, currentTime }: TimelineSl
 // ---------------------------------------------------------------------------
 
 const containerStyle: CSSProperties = {
-  position: 'absolute',
-  bottom: 20,
-  left: 20,
-  right: 320, // leave room for sidebar
+  position: 'relative',
   zIndex: 15,
   pointerEvents: 'auto',
   backgroundColor: 'rgba(10, 14, 39, 0.85)',
