@@ -470,6 +470,47 @@ describe('TileLoader', () => {
     });
   });
 
+  // -- Time-series layers ---------------------------------------------------
+
+  describe('time-series layers', () => {
+    it('includes time_year query parameter when provided', async () => {
+      const fetchMock = mockFetchSuccess();
+      vi.stubGlobal('fetch', fetchMock);
+
+      await loader.loadTiles(
+        'coastlines',
+        [{ z: 2, x: 1, y: 1 }],
+        { lat: 0, lng: 0 },
+        -250000000, // 250 Ma
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const callUrl = fetchMock.mock.calls[0][0];
+      expect(callUrl).toContain('/api/tiles/coastlines/2/1/1');
+      expect(callUrl).toContain('?time_year=-250000000');
+
+      vi.unstubAllGlobals();
+    });
+
+    it('omits time_year query parameter when not provided', async () => {
+      const fetchMock = mockFetchSuccess();
+      vi.stubGlobal('fetch', fetchMock);
+
+      await loader.loadTiles(
+        'layer1',
+        [{ z: 2, x: 1, y: 1 }],
+        { lat: 0, lng: 0 },
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const callUrl = fetchMock.mock.calls[0][0];
+      expect(callUrl).toBe('/api/tiles/layer1/2/1/1');
+      expect(callUrl).not.toContain('time_year');
+
+      vi.unstubAllGlobals();
+    });
+  });
+
   // -- Abort signal ---------------------------------------------------------
 
   describe('abort signal', () => {
@@ -485,6 +526,7 @@ describe('TileLoader', () => {
         'layer1',
         [{ z: 2, x: 1, y: 1 }, { z: 2, x: 2, y: 1 }],
         { lat: 0, lng: 0 },
+        undefined, // timeYear
         controller.signal,
       );
 

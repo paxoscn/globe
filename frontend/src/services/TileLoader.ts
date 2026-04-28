@@ -151,12 +151,14 @@ export function buildCacheKey(layerId: string, coord: TileCoord): TileCacheKey {
  *
  * @param layerId - The layer to fetch from.
  * @param coord - Tile coordinates.
+ * @param timeYear - Optional absolute CE year for time-series layers.
  * @param signal - Optional AbortSignal for cancellation.
  * @returns The parsed GeoJSON FeatureCollection and approximate size.
  */
 async function fetchTileWithRetry(
   layerId: string,
   coord: TileCoord,
+  timeYear?: number,
   signal?: AbortSignal,
 ): Promise<{ geojson: FeatureCollection; sizeBytes: number }> {
   let lastError: Error | undefined;
@@ -168,7 +170,13 @@ async function fetchTileWithRetry(
     }
 
     try {
-      const url = `/api/tiles/${encodeURIComponent(layerId)}/${coord.z}/${coord.x}/${coord.y}`;
+      let url = `/api/tiles/${encodeURIComponent(layerId)}/${coord.z}/${coord.x}/${coord.y}`;
+      
+      // Add time_year query parameter if provided
+      if (timeYear !== undefined) {
+        url += `?time_year=${timeYear}`;
+      }
+      
       const response = await fetch(url, { signal });
 
       if (!response.ok) {
@@ -224,6 +232,7 @@ export class TileLoader {
    * @param layerId - Layer to load tiles for.
    * @param tiles - Tile coordinates to load.
    * @param center - Viewport center point (lat/lng in degrees).
+   * @param timeYear - Optional absolute CE year for time-series layers.
    * @param signal - Optional AbortSignal for cancellation.
    * @returns Array of load results for uncached tiles.
    */
@@ -231,6 +240,7 @@ export class TileLoader {
     layerId: string,
     tiles: TileCoord[],
     center: GeoPoint,
+    timeYear?: number,
     signal?: AbortSignal,
   ): Promise<TileLoadResult[]> {
     // 1. Filter out tiles already in cache.
@@ -261,6 +271,7 @@ export class TileLoader {
         const { geojson, sizeBytes } = await fetchTileWithRetry(
           layerId,
           coord,
+          timeYear,
           signal,
         );
 
@@ -299,12 +310,14 @@ export class TileLoader {
    *
    * @param layerId - Layer to load from.
    * @param coord - Tile coordinates.
+   * @param timeYear - Optional absolute CE year for time-series layers.
    * @param signal - Optional AbortSignal.
    * @returns The load result.
    */
   async retryTile(
     layerId: string,
     coord: TileCoord,
+    timeYear?: number,
     signal?: AbortSignal,
   ): Promise<TileLoadResult> {
     const key = buildCacheKey(layerId, coord);
@@ -314,6 +327,7 @@ export class TileLoader {
       const { geojson, sizeBytes } = await fetchTileWithRetry(
         layerId,
         coord,
+        timeYear,
         signal,
       );
 

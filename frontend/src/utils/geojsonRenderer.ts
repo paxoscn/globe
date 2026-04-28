@@ -11,12 +11,7 @@
 import * as THREE from 'three';
 import type {
   FeatureCollection,
-  Feature,
   Geometry,
-  LineString,
-  Polygon,
-  MultiLineString,
-  MultiPolygon,
   GeoJSONPosition,
 } from '../types/geojson';
 

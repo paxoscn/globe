@@ -205,23 +205,23 @@ export default function App() {
       // Build URL
       let url = `/api/tiles/${el.layerId}/0/0/0`;
       if (timeParam !== undefined) {
-        url += `?time=${timeParam}&time_fallback=1`;
+        url += `?time_year=${timeParam}&time_fallback=1`;
       }
 
       inflightRef.current.add(requestKey);
 
       fetch(url)
         .then((res) => { if (!res.ok) throw new Error(`${res.status}`); return res.json(); })
-        .then((envelope: { actual_time: number; geojson: FeatureCollection }) => {
-          const { actual_time, geojson } = envelope;
-          const cacheKey = `${el.layerId}:${actual_time}`;
+        .then((envelope: { actual_time_year: number; geojson: FeatureCollection }) => {
+          const { actual_time_year, geojson } = envelope;
+          const cacheKey = `${el.layerId}:${actual_time_year}`;
 
           tileCacheRef.current.set(cacheKey, geojson);
 
-          // Only update state if actual_time changed for this layer
+          // Only update state if actual_time_year changed for this layer
           const prevActual = lastActualTimeRef.current.get(el.layerId);
-          if (prevActual !== actual_time) {
-            lastActualTimeRef.current.set(el.layerId, actual_time);
+          if (prevActual !== actual_time_year) {
+            lastActualTimeRef.current.set(el.layerId, actual_time_year);
             setTileDataMap((prev) => ({ ...prev, [el.layerId]: geojson }));
           }
         })
@@ -265,11 +265,12 @@ export default function App() {
         }, 0) / visibleTiles.length;
 
         for (const el of enabledLayers) {
-          tileLoaderRef.current.loadTiles(el.layerId, visibleTiles, { lat: centerLat, lng: centerLng });
+          const timeYear = computeTimeParam(el.meta.timelineConfig, currentYear);
+          tileLoaderRef.current.loadTiles(el.layerId, visibleTiles, { lat: centerLat, lng: centerLng }, timeYear);
         }
       }, VIEWPORT_DEBOUNCE_MS);
     },
-    [enabledLayers],
+    [enabledLayers, currentYear],
   );
 
   useEffect(() => () => { if (debounceTimerRef.current !== null) clearTimeout(debounceTimerRef.current); }, []);

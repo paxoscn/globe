@@ -71,6 +71,8 @@ describe('LayerManager', () => {
     layerGroups: [createLayerGroup()],
     onLayerToggle: vi.fn(),
     onGroupSliderChange: vi.fn(),
+    currentYear: 2026,
+    onCurrentYearChange: vi.fn(),
   });
 
   describe('Desktop layout (sidebar)', () => {
