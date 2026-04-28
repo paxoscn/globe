@@ -27,17 +27,27 @@ pub async fn create_tables(db: &impl ConnectionTrait) -> Result<(), DbErr> {
     db.execute(db.get_database_backend().build(&tiles_stmt))
         .await?;
 
-    // Create unique index on (layer_id, z, x, y) for tiles
-    let tiles_unique_idx = Index::create()
+    // Create index on (layer_id, time_year) for time-series queries
+    let tiles_time_idx = Index::create()
+        .name("idx_tiles_layer_time")
+        .table(entities::tiles::Entity)
+        .col(entities::tiles::Column::LayerId)
+        .col(entities::tiles::Column::TimeYear)
+        .to_owned();
+    db.execute(db.get_database_backend().build(&tiles_time_idx))
+        .await?;
+
+    // Create index on (layer_id, z, x, y) for spatial queries
+    // Note: Not unique anymore since time-series data can have multiple tiles at z=0
+    let tiles_spatial_idx = Index::create()
         .name("idx_tiles_layer_z_x_y")
         .table(entities::tiles::Entity)
         .col(entities::tiles::Column::LayerId)
         .col(entities::tiles::Column::Z)
         .col(entities::tiles::Column::X)
         .col(entities::tiles::Column::Y)
-        .unique()
         .to_owned();
-    db.execute(db.get_database_backend().build(&tiles_unique_idx))
+    db.execute(db.get_database_backend().build(&tiles_spatial_idx))
         .await?;
 
     // Create object_references table with foreign keys to objects and layers

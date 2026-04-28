@@ -77,7 +77,7 @@ async fn seed_layers(db: &DatabaseConnection) -> Result<(), DbErr> {
 
 // ---------------------------------------------------------------------------
 // Coastline tiles — read from data/coastlines/*.json
-// Each file {Ma}Ma.json → tile with z=Ma, x=0, y=0
+// Each file {Ma}Ma.json → tile with time_year = 2026 - (Ma * 1_000_000)
 // ---------------------------------------------------------------------------
 
 async fn seed_coastline_tiles(db: &DatabaseConnection) -> Result<(), DbErr> {
@@ -120,19 +120,23 @@ async fn seed_coastline_tiles(db: &DatabaseConnection) -> Result<(), DbErr> {
 
         let size_bytes = content.len() as i32;
 
+        // Convert Ma to absolute CE year: 2026 - (Ma * 1_000_000)
+        let time_year = 2026.0 - (ma as f64 * 1_000_000.0);
+
         tiles::ActiveModel {
             id: sea_orm::NotSet,
             layer_id: Set("world-borders".into()),
-            z: Set(ma as i16),
+            z: Set(0),  // Spatial LOD level (0 for time-series data)
             x: Set(0),
             y: Set(0),
             geojson: Set(geojson),
             size_bytes: Set(size_bytes),
+            time_year: Set(Some(time_year)),
         }
         .insert(db)
         .await?;
 
-        println!("  Seeded coastline tile: {} Ma ({} bytes)", ma, size_bytes);
+        println!("  Seeded coastline tile: {} Ma = {} CE ({} bytes)", ma, time_year, size_bytes);
     }
 
     println!("  Loaded {} coastline time steps", entries.len());
@@ -144,7 +148,7 @@ async fn seed_coastline_tiles(db: &DatabaseConnection) -> Result<(), DbErr> {
 // ---------------------------------------------------------------------------
 
 async fn seed_other_tiles(db: &DatabaseConnection) -> Result<(), DbErr> {
-    // Cities
+    // Cities (no time dimension)
     let cities = cities_geojson();
     let c_str = serde_json::to_string(&cities).unwrap();
     tiles::ActiveModel {
@@ -155,11 +159,12 @@ async fn seed_other_tiles(db: &DatabaseConnection) -> Result<(), DbErr> {
         y: Set(0),
         geojson: Set(cities),
         size_bytes: Set(c_str.len() as i32),
+        time_year: Set(None),
     }
     .insert(db)
     .await?;
 
-    // Napoleon trajectory
+    // Napoleon trajectory (single tile with all data)
     let napoleon = napoleon_geojson();
     let n_str = serde_json::to_string(&napoleon).unwrap();
     tiles::ActiveModel {
@@ -170,6 +175,7 @@ async fn seed_other_tiles(db: &DatabaseConnection) -> Result<(), DbErr> {
         y: Set(0),
         geojson: Set(napoleon),
         size_bytes: Set(n_str.len() as i32),
+        time_year: Set(None),  // Time is encoded in feature properties
     }
     .insert(db)
     .await?;

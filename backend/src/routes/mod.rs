@@ -99,23 +99,23 @@ pub fn api_router() -> Router<AppState> {
         .route("/api/objects/{object_id}", get(get_object))
 }
 
-/// Optional query parameters for the tile endpoint.
+/// Query parameters for tile endpoint.
 #[derive(Debug, Deserialize)]
 pub struct TileQuery {
-    /// Optional time parameter (e.g. Ma value for geological layers).
-    /// When provided, overrides the `z` path parameter for tile lookup.
-    pub time: Option<i32>,
+    /// Optional absolute CE year for time-series layers.
+    /// When provided, queries by time_year instead of z coordinate.
+    pub time_year: Option<f64>,
     /// Fallback direction when no exact time match exists.
-    /// Positive: find nearest tile with z > time.
-    /// Negative: find nearest tile with z < time.
+    /// Positive: find nearest tile with time_year > requested.
+    /// Negative: find nearest tile with time_year < requested.
     /// Zero or absent: exact match only.
     pub time_fallback: Option<i32>,
 }
 
-/// GET /api/tiles/{layer_id}/{z}/{x}/{y}?time={t}&time_fallback={dir}
+/// GET /api/tiles/{layer_id}/{z}/{x}/{y}?time_year={year}&time_fallback={dir}
 ///
-/// Returns a JSON envelope with `actual_time` and `geojson` fields.
-/// If `?time=` is provided, it overrides the `z` coordinate for lookup.
+/// Returns a JSON envelope with `actual_time_year` and `geojson` fields.
+/// If `?time_year=` is provided, it queries by time_year instead of z coordinate.
 /// If `?time_fallback=` is provided and no exact match, searches in the
 /// specified direction for the nearest available time.
 async fn get_tile(
@@ -123,26 +123,26 @@ async fn get_tile(
     Path((layer_id, z, x, y)): Path<(String, i32, i32, i32)>,
     Query(query): Query<TileQuery>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
-    let lookup_z = query.time.unwrap_or(z);
-    let fallback = query.time_fallback.unwrap_or(0);
-
     let (z_valid, x_valid, y_valid) =
-        tile_service::validate_tile_coords(lookup_z, x, y)
+        tile_service::validate_tile_coords(z, x, y)
             .map_err(|e| ErrorResponse::from_tile_error(&e))?;
 
-    let result = if query.time.is_some() && fallback != 0 {
-        tile_service::get_tile_with_time(&state.db, &layer_id, z_valid, x_valid, y_valid, fallback)
+    let result = if let Some(time_year) = query.time_year {
+        // Query by time_year
+        let fallback = query.time_fallback.unwrap_or(0);
+        tile_service::get_tile_by_time_year(&state.db, &layer_id, time_year, x_valid, y_valid, fallback)
             .await
             .map_err(|e| ErrorResponse::from_tile_error(&e))?
     } else {
+        // Query by z coordinate (spatial LOD)
         tile_service::get_tile(&state.db, &layer_id, z_valid, x_valid, y_valid)
             .await
             .map_err(|e| ErrorResponse::from_tile_error(&e))?
     };
 
-    // Return envelope with actual_time so the client can detect unchanged data
+    // Return envelope with actual_time_year so the client can detect unchanged data
     let body = serde_json::json!({
-        "actual_time": result.actual_time,
+        "actual_time_year": result.actual_time_year,
         "geojson": result.geojson,
     });
 

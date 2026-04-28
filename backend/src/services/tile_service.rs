@@ -1,5 +1,5 @@
 use axum::http::StatusCode;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde::Serialize;
 use std::time::Duration;
 
@@ -114,11 +114,11 @@ pub fn validate_tile_coords(z: i32, x: i32, y: i32) -> Result<(i16, i32, i32), T
     Ok((z_i16, x, y))
 }
 
-/// Result of a tile query, including the actual z (time) value used.
+/// Result of a tile query, including the actual time_year value used.
 #[derive(Debug, Serialize)]
 pub struct TileResult {
-    /// The actual time value of the returned tile (equals the z coordinate).
-    pub actual_time: i32,
+    /// The actual time_year value of the returned tile (None for non-temporal layers).
+    pub actual_time_year: Option<f64>,
     /// The GeoJSON FeatureCollection.
     pub geojson: serde_json::Value,
 }
@@ -134,74 +134,106 @@ pub async fn get_tile(
 ) -> Result<TileResult, TileServiceError> {
     let tile = find_tile_exact(db, layer_id, z, x, y).await?;
     let geojson = attach_object_refs(db, layer_id, tile.geojson).await?;
-    Ok(TileResult { actual_time: z as i32, geojson })
+    Ok(TileResult { 
+        actual_time_year: tile.time_year,
+        geojson 
+    })
 }
 
-/// Query a tile with time fallback.
+/// Query a tile by time_year with optional fallback.
 ///
-/// - `time_fallback > 0`: if no exact match, find the nearest tile with z > time
-/// - `time_fallback < 0`: if no exact match, find the nearest tile with z < time
-/// - `time_fallback == 0` or `None`: exact match only (same as `get_tile`)
-pub async fn get_tile_with_time(
+/// - `time_fallback > 0`: if no exact match, find the nearest tile with time_year > requested
+/// - `time_fallback < 0`: if no exact match, find the nearest tile with time_year < requested
+/// - `time_fallback == 0`: exact match only
+pub async fn get_tile_by_time_year(
     db: &DatabaseConnection,
     layer_id: &str,
-    time: i16,
+    time_year: f64,
     x: i32,
     y: i32,
     time_fallback: i32,
 ) -> Result<TileResult, TileServiceError> {
-    // Try exact match first
-    match find_tile_exact(db, layer_id, time, x, y).await {
-        Ok(tile) => {
-            let geojson = attach_object_refs(db, layer_id, tile.geojson).await?;
-            return Ok(TileResult { actual_time: time as i32, geojson });
-        }
-        Err(TileServiceError::NotFound { .. }) if time_fallback != 0 => {
-            // Fall through to fallback search
-        }
-        Err(e) => return Err(e),
-    }
-
-    // Fallback: find nearest tile in the specified direction
-    let tile_result = tokio::time::timeout(QUERY_TIMEOUT, async {
-        let mut query = tiles::Entity::find()
+    // Try exact match first (with small epsilon for floating point comparison)
+    let epsilon = 0.001; // ~8 hours for fractional years
+    
+    let exact_result = tokio::time::timeout(QUERY_TIMEOUT, async {
+        tiles::Entity::find()
             .filter(tiles::Column::LayerId.eq(layer_id))
             .filter(tiles::Column::X.eq(x))
-            .filter(tiles::Column::Y.eq(y));
-
-        if time_fallback > 0 {
-            // Search forward: nearest z > time
-            query = query
-                .filter(tiles::Column::Z.gt(time))
-                .order_by_asc(tiles::Column::Z);
-        } else {
-            // Search backward: nearest z < time
-            query = query
-                .filter(tiles::Column::Z.lt(time))
-                .order_by_desc(tiles::Column::Z);
-        }
-
-        query.one(db).await
+            .filter(tiles::Column::Y.eq(y))
+            .filter(tiles::Column::TimeYear.is_not_null())
+            .all(db)
+            .await
     })
     .await;
 
-    let tile = match tile_result {
-        Ok(Ok(Some(tile))) => tile,
-        Ok(Ok(None)) => {
-            return Err(TileServiceError::NotFound {
-                layer_id: layer_id.to_string(),
-                z: time,
-                x,
-                y,
-            });
-        }
+    let all_tiles = match exact_result {
+        Ok(Ok(tiles)) => tiles,
         Ok(Err(e)) => return Err(TileServiceError::DatabaseError(e.to_string())),
         Err(_) => return Err(TileServiceError::QueryTimeout),
     };
 
-    let actual_time = tile.z as i32;
-    let geojson = attach_object_refs(db, layer_id, tile.geojson).await?;
-    Ok(TileResult { actual_time, geojson })
+    // Find exact match within epsilon
+    if let Some(tile) = all_tiles.iter().find(|t| {
+        if let Some(ty) = t.time_year {
+            (ty - time_year).abs() < epsilon
+        } else {
+            false
+        }
+    }) {
+        let geojson = attach_object_refs(db, layer_id, tile.geojson.clone()).await?;
+        return Ok(TileResult {
+            actual_time_year: tile.time_year,
+            geojson,
+        });
+    }
+
+    // No exact match, apply fallback if requested
+    if time_fallback == 0 {
+        return Err(TileServiceError::NotFound {
+            layer_id: layer_id.to_string(),
+            z: 0,
+            x,
+            y,
+        });
+    }
+
+    // Find nearest tile in the specified direction
+    let nearest_tile = if time_fallback > 0 {
+        // Find nearest tile with time_year > requested
+        all_tiles.iter()
+            .filter(|t| t.time_year.map_or(false, |ty| ty > time_year))
+            .min_by(|a, b| {
+                let a_ty = a.time_year.unwrap_or(f64::MAX);
+                let b_ty = b.time_year.unwrap_or(f64::MAX);
+                a_ty.partial_cmp(&b_ty).unwrap()
+            })
+    } else {
+        // Find nearest tile with time_year < requested
+        all_tiles.iter()
+            .filter(|t| t.time_year.map_or(false, |ty| ty < time_year))
+            .max_by(|a, b| {
+                let a_ty = a.time_year.unwrap_or(f64::MIN);
+                let b_ty = b.time_year.unwrap_or(f64::MIN);
+                a_ty.partial_cmp(&b_ty).unwrap()
+            })
+    };
+
+    match nearest_tile {
+        Some(tile) => {
+            let geojson = attach_object_refs(db, layer_id, tile.geojson.clone()).await?;
+            Ok(TileResult {
+                actual_time_year: tile.time_year,
+                geojson,
+            })
+        }
+        None => Err(TileServiceError::NotFound {
+            layer_id: layer_id.to_string(),
+            z: 0,
+            x,
+            y,
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------
