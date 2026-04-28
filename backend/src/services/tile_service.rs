@@ -1,5 +1,5 @@
 use axum::http::StatusCode;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 use serde::Serialize;
 use std::time::Duration;
 
@@ -114,20 +114,108 @@ pub fn validate_tile_coords(z: i32, x: i32, y: i32) -> Result<(i16, i32, i32), T
     Ok((z_i16, x, y))
 }
 
+/// Result of a tile query, including the actual z (time) value used.
+#[derive(Debug, Serialize)]
+pub struct TileResult {
+    /// The actual time value of the returned tile (equals the z coordinate).
+    pub actual_time: i32,
+    /// The GeoJSON FeatureCollection.
+    pub geojson: serde_json::Value,
+}
+
 /// Query a tile by (layer_id, z, x, y) and return a GeoJSON FeatureCollection
 /// with embedded object references.
-///
-/// Returns the GeoJSON value on success, or a TileServiceError on failure.
-/// Target response time: ≤200ms.
 pub async fn get_tile(
     db: &DatabaseConnection,
     layer_id: &str,
     z: i16,
     x: i32,
     y: i32,
-) -> Result<serde_json::Value, TileServiceError> {
-    // Query tile with timeout
+) -> Result<TileResult, TileServiceError> {
+    let tile = find_tile_exact(db, layer_id, z, x, y).await?;
+    let geojson = attach_object_refs(db, layer_id, tile.geojson).await?;
+    Ok(TileResult { actual_time: z as i32, geojson })
+}
+
+/// Query a tile with time fallback.
+///
+/// - `time_fallback > 0`: if no exact match, find the nearest tile with z > time
+/// - `time_fallback < 0`: if no exact match, find the nearest tile with z < time
+/// - `time_fallback == 0` or `None`: exact match only (same as `get_tile`)
+pub async fn get_tile_with_time(
+    db: &DatabaseConnection,
+    layer_id: &str,
+    time: i16,
+    x: i32,
+    y: i32,
+    time_fallback: i32,
+) -> Result<TileResult, TileServiceError> {
+    // Try exact match first
+    match find_tile_exact(db, layer_id, time, x, y).await {
+        Ok(tile) => {
+            let geojson = attach_object_refs(db, layer_id, tile.geojson).await?;
+            return Ok(TileResult { actual_time: time as i32, geojson });
+        }
+        Err(TileServiceError::NotFound { .. }) if time_fallback != 0 => {
+            // Fall through to fallback search
+        }
+        Err(e) => return Err(e),
+    }
+
+    // Fallback: find nearest tile in the specified direction
     let tile_result = tokio::time::timeout(QUERY_TIMEOUT, async {
+        let mut query = tiles::Entity::find()
+            .filter(tiles::Column::LayerId.eq(layer_id))
+            .filter(tiles::Column::X.eq(x))
+            .filter(tiles::Column::Y.eq(y));
+
+        if time_fallback > 0 {
+            // Search forward: nearest z > time
+            query = query
+                .filter(tiles::Column::Z.gt(time))
+                .order_by_asc(tiles::Column::Z);
+        } else {
+            // Search backward: nearest z < time
+            query = query
+                .filter(tiles::Column::Z.lt(time))
+                .order_by_desc(tiles::Column::Z);
+        }
+
+        query.one(db).await
+    })
+    .await;
+
+    let tile = match tile_result {
+        Ok(Ok(Some(tile))) => tile,
+        Ok(Ok(None)) => {
+            return Err(TileServiceError::NotFound {
+                layer_id: layer_id.to_string(),
+                z: time,
+                x,
+                y,
+            });
+        }
+        Ok(Err(e)) => return Err(TileServiceError::DatabaseError(e.to_string())),
+        Err(_) => return Err(TileServiceError::QueryTimeout),
+    };
+
+    let actual_time = tile.z as i32;
+    let geojson = attach_object_refs(db, layer_id, tile.geojson).await?;
+    Ok(TileResult { actual_time, geojson })
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+async fn find_tile_exact(
+    db: &DatabaseConnection,
+    layer_id: &str,
+    z: i16,
+    x: i32,
+    y: i32,
+) -> Result<tiles::Model, TileServiceError> {
+    let result = tokio::time::timeout(QUERY_TIMEOUT, async {
         tiles::Entity::find()
             .filter(tiles::Column::LayerId.eq(layer_id))
             .filter(tiles::Column::Z.eq(z))
@@ -138,27 +226,24 @@ pub async fn get_tile(
     })
     .await;
 
-    // Handle timeout
-    let tile_query = match tile_result {
-        Ok(query_result) => query_result,
-        Err(_) => return Err(TileServiceError::QueryTimeout),
-    };
+    match result {
+        Ok(Ok(Some(tile))) => Ok(tile),
+        Ok(Ok(None)) => Err(TileServiceError::NotFound {
+            layer_id: layer_id.to_string(),
+            z,
+            x,
+            y,
+        }),
+        Ok(Err(e)) => Err(TileServiceError::DatabaseError(e.to_string())),
+        Err(_) => Err(TileServiceError::QueryTimeout),
+    }
+}
 
-    // Handle database errors
-    let tile = match tile_query {
-        Ok(Some(tile)) => tile,
-        Ok(None) => {
-            return Err(TileServiceError::NotFound {
-                layer_id: layer_id.to_string(),
-                z,
-                x,
-                y,
-            })
-        }
-        Err(e) => return Err(TileServiceError::DatabaseError(e.to_string())),
-    };
-
-    // Query object references for this layer with timeout
+async fn attach_object_refs(
+    db: &DatabaseConnection,
+    layer_id: &str,
+    geojson: serde_json::Value,
+) -> Result<serde_json::Value, TileServiceError> {
     let refs_result = tokio::time::timeout(QUERY_TIMEOUT, async {
         object_references::Entity::find()
             .filter(object_references::Column::LayerId.eq(layer_id))
@@ -173,8 +258,7 @@ pub async fn get_tile(
         Err(_) => return Err(TileServiceError::QueryTimeout),
     };
 
-    // Build embedded object references
-    let embedded_refs: Vec<EmbeddedObjectRef> = object_refs
+    let embedded: Vec<EmbeddedObjectRef> = object_refs
         .into_iter()
         .map(|r| EmbeddedObjectRef {
             object_id: r.object_id,
@@ -184,10 +268,7 @@ pub async fn get_tile(
         })
         .collect();
 
-    // Merge object references into the GeoJSON FeatureCollection
-    let geojson = embed_object_refs_in_geojson(tile.geojson, &embedded_refs);
-
-    Ok(geojson)
+    Ok(embed_object_refs_in_geojson(geojson, &embedded))
 }
 
 /// Embed object references into a GeoJSON FeatureCollection.

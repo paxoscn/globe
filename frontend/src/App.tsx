@@ -180,36 +180,55 @@ export default function App() {
   );
 
   // -----------------------------------------------------------------------
-  // Tile data — all layers fetched from /api/tiles/{id}/0/0/0[?time=N]
+  // Tile data — all layers fetched from /api/tiles/{id}/0/0/0[?time=N&time_fallback=1]
   // -----------------------------------------------------------------------
 
   const [tileDataMap, setTileDataMap] = useState<Record<string, FeatureCollection>>({});
+  // Cache keyed by "layerId:actualTime" — avoids re-rendering when actual_time hasn't changed
   const tileCacheRef = useRef<Map<string, FeatureCollection>>(new Map());
+  // Track the last actual_time per layer to skip redundant updates
+  const lastActualTimeRef = useRef<Map<string, number>>(new Map());
+  // Track in-flight requests to avoid duplicates
+  const inflightRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     for (const el of enabledLayers) {
       const timeParam = computeTimeParam(el.meta.timelineConfig, currentYear);
-      const cacheKey = timeParam !== undefined ? `${el.layerId}:${timeParam}` : el.layerId;
+      const requestKey = timeParam !== undefined ? `${el.layerId}:${timeParam}` : el.layerId;
 
-      const cached = tileCacheRef.current.get(cacheKey);
-      if (cached) {
-        setTileDataMap((prev) => (prev[el.layerId] === cached ? prev : { ...prev, [el.layerId]: cached }));
-        continue;
+      // Skip if already in-flight for this exact request
+      if (inflightRef.current.has(requestKey)) continue;
+
+      // For non-timeline layers, skip if already loaded
+      if (timeParam === undefined && tileDataMap[el.layerId]) continue;
+
+      // Build URL
+      let url = `/api/tiles/${el.layerId}/0/0/0`;
+      if (timeParam !== undefined) {
+        url += `?time=${timeParam}&time_fallback=1`;
       }
 
-      const url = timeParam !== undefined
-        ? `/api/tiles/${el.layerId}/0/0/0?time=${timeParam}`
-        : `/api/tiles/${el.layerId}/0/0/0`;
+      inflightRef.current.add(requestKey);
 
       fetch(url)
-        .then((res) => { if (!res.ok) throw new Error(`${res.status}`); return res.json() as Promise<FeatureCollection>; })
-        .then((data) => {
-          tileCacheRef.current.set(cacheKey, data);
-          setTileDataMap((prev) => ({ ...prev, [el.layerId]: data }));
+        .then((res) => { if (!res.ok) throw new Error(`${res.status}`); return res.json(); })
+        .then((envelope: { actual_time: number; geojson: FeatureCollection }) => {
+          const { actual_time, geojson } = envelope;
+          const cacheKey = `${el.layerId}:${actual_time}`;
+
+          tileCacheRef.current.set(cacheKey, geojson);
+
+          // Only update state if actual_time changed for this layer
+          const prevActual = lastActualTimeRef.current.get(el.layerId);
+          if (prevActual !== actual_time) {
+            lastActualTimeRef.current.set(el.layerId, actual_time);
+            setTileDataMap((prev) => ({ ...prev, [el.layerId]: geojson }));
+          }
         })
-        .catch(() => { /* no data for this time — keep previous */ });
+        .catch(() => { /* no data — keep previous */ })
+        .finally(() => { inflightRef.current.delete(requestKey); });
     }
-  }, [enabledLayers, currentYear]);
+  }, [enabledLayers, currentYear, tileDataMap]);
 
   const layerGeoJSON: Record<string, FeatureCollection> = useMemo(() => {
     const result: Record<string, FeatureCollection> = {};

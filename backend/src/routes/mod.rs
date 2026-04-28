@@ -105,30 +105,48 @@ pub struct TileQuery {
     /// Optional time parameter (e.g. Ma value for geological layers).
     /// When provided, overrides the `z` path parameter for tile lookup.
     pub time: Option<i32>,
+    /// Fallback direction when no exact time match exists.
+    /// Positive: find nearest tile with z > time.
+    /// Negative: find nearest tile with z < time.
+    /// Zero or absent: exact match only.
+    pub time_fallback: Option<i32>,
 }
 
-/// GET /api/tiles/{layer_id}/{z}/{x}/{y}?time={ma}
+/// GET /api/tiles/{layer_id}/{z}/{x}/{y}?time={t}&time_fallback={dir}
 ///
-/// Returns a GeoJSON FeatureCollection for the requested tile.
-/// If `?time=` is provided, it overrides the `z` coordinate for lookup
-/// (used for time-indexed layers like continental drift).
-/// Returns 404 if no tile exists for the given coordinates.
+/// Returns a JSON envelope with `actual_time` and `geojson` fields.
+/// If `?time=` is provided, it overrides the `z` coordinate for lookup.
+/// If `?time_fallback=` is provided and no exact match, searches in the
+/// specified direction for the nearest available time.
 async fn get_tile(
     State(state): State<AppState>,
     Path((layer_id, z, x, y)): Path<(String, i32, i32, i32)>,
     Query(query): Query<TileQuery>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
-    // If time param is provided, use it as the z coordinate for lookup
     let lookup_z = query.time.unwrap_or(z);
+    let fallback = query.time_fallback.unwrap_or(0);
 
     let (z_valid, x_valid, y_valid) =
-        tile_service::validate_tile_coords(lookup_z, x, y).map_err(|e| ErrorResponse::from_tile_error(&e))?;
+        tile_service::validate_tile_coords(lookup_z, x, y)
+            .map_err(|e| ErrorResponse::from_tile_error(&e))?;
 
-    let geojson = tile_service::get_tile(&state.db, &layer_id, z_valid, x_valid, y_valid)
-        .await
-        .map_err(|e| ErrorResponse::from_tile_error(&e))?;
+    let result = if query.time.is_some() && fallback != 0 {
+        tile_service::get_tile_with_time(&state.db, &layer_id, z_valid, x_valid, y_valid, fallback)
+            .await
+            .map_err(|e| ErrorResponse::from_tile_error(&e))?
+    } else {
+        tile_service::get_tile(&state.db, &layer_id, z_valid, x_valid, y_valid)
+            .await
+            .map_err(|e| ErrorResponse::from_tile_error(&e))?
+    };
 
-    Ok(geojson_response(geojson))
+    // Return envelope with actual_time so the client can detect unchanged data
+    let body = serde_json::json!({
+        "actual_time": result.actual_time,
+        "geojson": result.geojson,
+    });
+
+    Ok(json_response(body))
 }
 
 /// GET /api/layers
