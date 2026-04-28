@@ -153,8 +153,8 @@ function GlobeMeshWithWheel({
   containerRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const meshRef = useRef<THREE.Mesh>(null);
-  const { state, handlers } = useArcballRotation();
-  const { zoom, onWheel } = useZoom({
+  const { refs: arcballRefs, handlers } = useArcballRotation();
+  const { zoomRef, onWheel } = useZoom({
     minZoom: DEFAULT_MIN_ZOOM,
     maxZoom: DEFAULT_MAX_ZOOM,
     initialZoom: DEFAULT_ZOOM,
@@ -186,10 +186,11 @@ function GlobeMeshWithWheel({
   useFrame((_state, delta) => {
     uniforms.uTime.value += delta;
     if (meshRef.current) {
-      meshRef.current.quaternion.copy(state.quaternion);
+      // Read directly from the ref to get the latest quaternion (not a stale snapshot)
+      meshRef.current.quaternion.copy(arcballRefs.quaternionRef.current);
     }
-    // Adjust camera distance based on current zoom level
-    camera.position.z = zoomToCameraDistance(zoom);
+    // Adjust camera distance based on current zoom level (read from ref)
+    camera.position.z = zoomToCameraDistance(zoomRef.current);
   });
 
   return (

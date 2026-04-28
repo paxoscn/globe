@@ -28,6 +28,12 @@ export interface ArcballRotationState {
   isDragging: boolean;
 }
 
+/** Ref-based state that stays current across frames (avoids stale closure issues). */
+export interface ArcballRotationRefs {
+  quaternionRef: React.RefObject<THREE.Quaternion>;
+  isDraggingRef: React.RefObject<boolean>;
+}
+
 export interface ArcballHandlers {
   onPointerDown: (e: ThreeEvent<PointerEvent>) => void;
   onPointerMove: (e: ThreeEvent<PointerEvent>) => void;
@@ -35,8 +41,10 @@ export interface ArcballHandlers {
 }
 
 export interface UseArcballRotationReturn {
-  /** Current rotation state. */
+  /** Current rotation state (snapshot — may be stale in animation loops). */
   state: ArcballRotationState;
+  /** Ref-based state that is always current (use in useFrame callbacks). */
+  refs: ArcballRotationRefs;
   /** Event handlers to attach to the globe mesh. */
   handlers: ArcballHandlers;
   /** Reset orientation to identity quaternion. */
@@ -253,6 +261,14 @@ export function useArcballRotation(sensitivity = 1.0): UseArcballRotationReturn 
       // Reset velocity samples and record the first sample
       pointerSamplesRef.current = [{ nx, ny, time: performance.now() }];
 
+      console.debug(
+        '[Arcball] pointerDown — id=%d type=%s ndc=(%.3f, %.3f)',
+        e.nativeEvent.pointerId,
+        e.nativeEvent.pointerType,
+        nx,
+        ny,
+      );
+
       e.stopPropagation();
     },
     [sensitivity],
@@ -287,6 +303,16 @@ export function useArcballRotation(sensitivity = 1.0): UseArcballRotationReturn 
         samples.shift();
       }
 
+      console.debug(
+        '[Arcball] pointerMove — ndc=(%.3f, %.3f) quat=(%.3f, %.3f, %.3f, %.3f)',
+        nx,
+        ny,
+        newQuat.x,
+        newQuat.y,
+        newQuat.z,
+        newQuat.w,
+      );
+
       e.stopPropagation();
     },
     [sensitivity],
@@ -301,6 +327,15 @@ export function useArcballRotation(sensitivity = 1.0): UseArcballRotationReturn 
       if (velocity) {
         inertiaAxisRef.current.copy(velocity.axis);
         inertiaSpeedRef.current = velocity.speed;
+        console.debug(
+          '[Arcball] pointerUp — inertia axis=(%.3f, %.3f, %.3f) speed=%.4f rad/s',
+          velocity.axis.x,
+          velocity.axis.y,
+          velocity.axis.z,
+          velocity.speed,
+        );
+      } else {
+        console.debug('[Arcball] pointerUp — no inertia (insufficient samples or speed)');
       }
 
       isDraggingRef.current = false;
@@ -365,6 +400,10 @@ export function useArcballRotation(sensitivity = 1.0): UseArcballRotationReturn 
     state: {
       quaternion: quaternionRef.current,
       isDragging: isDraggingRef.current,
+    },
+    refs: {
+      quaternionRef,
+      isDraggingRef,
     },
     handlers: {
       onPointerDown,

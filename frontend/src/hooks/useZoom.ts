@@ -93,6 +93,8 @@ export interface UseZoomReturn {
   zoom: number;
   /** Target zoom level that we're animating toward. */
   targetZoom: number;
+  /** Ref to the current zoom — always up-to-date (use in useFrame callbacks). */
+  zoomRef: React.RefObject<number>;
   /** Attach this to the canvas container's `onWheel` handler. */
   onWheel: (e: WheelEvent) => void;
   /** Reset zoom to the initial value. */
@@ -139,10 +141,18 @@ export function useZoom(options: UseZoomOptions = {}): UseZoomReturn {
       // deltaY > 0 means scroll down → zoom out (increase distance / decrease zoom)
       // We invert so scroll-up = zoom in (higher zoom value = closer)
       const delta = -e.deltaY * WHEEL_ZOOM_SPEED;
+      const prev = targetZoomRef.current;
       targetZoomRef.current = clamp(
         targetZoomRef.current + delta,
         minZoom,
         maxZoom,
+      );
+      console.debug(
+        '[Zoom] wheel — deltaY=%d zoomDelta=%.4f target: %.3f → %.3f',
+        e.deltaY,
+        delta,
+        prev,
+        targetZoomRef.current,
       );
     },
     [minZoom, maxZoom],
@@ -180,10 +190,18 @@ export function useZoom(options: UseZoomOptions = {}): UseZoomReturn {
         // Positive distDelta = fingers moving apart = zoom in
         const distDelta = dist - lastPinchDistRef.current;
         const zoomDelta = distDelta * 0.01; // scale factor for pinch sensitivity
+        const prev = targetZoomRef.current;
         targetZoomRef.current = clamp(
           targetZoomRef.current + zoomDelta,
           minZoom,
           maxZoom,
+        );
+        console.debug(
+          '[Zoom] pinch — distDelta=%.1f zoomDelta=%.4f target: %.3f → %.3f',
+          distDelta,
+          zoomDelta,
+          prev,
+          targetZoomRef.current,
         );
       }
 
@@ -252,6 +270,7 @@ export function useZoom(options: UseZoomOptions = {}): UseZoomReturn {
   return {
     zoom: zoomRef.current,
     targetZoom: targetZoomRef.current,
+    zoomRef,
     onWheel,
     reset,
   };
