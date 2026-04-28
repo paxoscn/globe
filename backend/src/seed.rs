@@ -164,23 +164,110 @@ async fn seed_other_tiles(db: &DatabaseConnection) -> Result<(), DbErr> {
     .insert(db)
     .await?;
 
-    // Napoleon trajectory (single tile with all data)
-    let napoleon = napoleon_geojson();
-    let n_str = serde_json::to_string(&napoleon).unwrap();
-    tiles::ActiveModel {
-        id: sea_orm::NotSet,
-        layer_id: Set("napoleon-trajectory".into()),
-        z: Set(0),
-        x: Set(0),
-        y: Set(0),
-        geojson: Set(napoleon),
-        size_bytes: Set(n_str.len() as i32),
-        time_year: Set(None),  // Time is encoded in feature properties
-    }
-    .insert(db)
-    .await?;
+    // Napoleon trajectory — create time-series tiles
+    // Each tile contains the trajectory up to that waypoint
+    seed_napoleon_tiles(db).await?;
 
     Ok(())
+}
+
+/// Seed Napoleon trajectory as time-series tiles.
+/// Each tile contains all waypoints up to and including that time point.
+async fn seed_napoleon_tiles(db: &DatabaseConnection) -> Result<(), DbErr> {
+    let waypoints = napoleon_waypoints();
+    
+    for (i, wp) in waypoints.iter().enumerate() {
+        // Parse date to get fractional year
+        let time_year = parse_date_to_year(wp.date);
+        
+        // Build GeoJSON with all waypoints up to this point
+        let geojson = napoleon_geojson_up_to_index(i);
+        let geojson_str = serde_json::to_string(&geojson).unwrap();
+        
+        tiles::ActiveModel {
+            id: sea_orm::NotSet,
+            layer_id: Set("napoleon-trajectory".into()),
+            z: Set(0),
+            x: Set(0),
+            y: Set(0),
+            geojson: Set(geojson),
+            size_bytes: Set(geojson_str.len() as i32),
+            time_year: Set(Some(time_year)),
+        }
+        .insert(db)
+        .await?;
+        
+        if i % 10 == 0 {
+            println!("  Seeded Napoleon tile {}/{}: {} ({} bytes)", 
+                i + 1, waypoints.len(), wp.date, geojson_str.len());
+        }
+    }
+    
+    println!("  Loaded {} Napoleon trajectory time steps", waypoints.len());
+    Ok(())
+}
+
+/// Parse a date string like "1796-03-27" to a fractional year.
+fn parse_date_to_year(date_str: &str) -> f64 {
+    let parts: Vec<&str> = date_str.split('-').collect();
+    if parts.len() != 3 {
+        return 0.0;
+    }
+    
+    let year: i32 = parts[0].parse().unwrap_or(0);
+    let month: u32 = parts[1].parse().unwrap_or(1);
+    let day: u32 = parts[2].parse().unwrap_or(1);
+    
+    // Calculate day of year
+    let days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut day_of_year = day;
+    for m in 0..(month - 1) as usize {
+        day_of_year += days_in_month[m];
+    }
+    
+    // Check for leap year
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+    if is_leap && month > 2 {
+        day_of_year += 1;
+    }
+    
+    let days_in_year = if is_leap { 366.0 } else { 365.0 };
+    year as f64 + (day_of_year as f64 - 1.0) / days_in_year
+}
+
+/// Build GeoJSON for Napoleon trajectory up to a specific waypoint index.
+fn napoleon_geojson_up_to_index(up_to_index: usize) -> serde_json::Value {
+    let all_waypoints = napoleon_waypoints();
+    let waypoints = &all_waypoints[0..=up_to_index];
+    
+    let mut features: Vec<serde_json::Value> = Vec::new();
+    
+    // Add the trajectory line
+    let coords: Vec<serde_json::Value> = waypoints.iter()
+        .map(|wp| json!([wp.lng, wp.lat]))
+        .collect();
+    
+    features.push(json!({
+        "type": "Feature",
+        "properties": { "name": "Napoleon Trajectory" },
+        "geometry": { "type": "LineString", "coordinates": coords }
+    }));
+    
+    // Add waypoint markers
+    for wp in waypoints {
+        features.push(json!({
+            "type": "Feature",
+            "properties": { 
+                "name": wp.location, 
+                "date": wp.date, 
+                "event": wp.event, 
+                "campaign": wp.campaign 
+            },
+            "geometry": { "type": "Point", "coordinates": [wp.lng, wp.lat] }
+        }));
+    }
+    
+    json!({ "type": "FeatureCollection", "features": features })
 }
 
 // ---------------------------------------------------------------------------
@@ -240,28 +327,6 @@ fn cities_geojson() -> serde_json::Value {
             { "type": "Feature", "properties": { "name": "Paris", "population": 2161000 }, "geometry": { "type": "Point", "coordinates": [2.3522, 48.8566] }}
         ]
     })
-}
-
-fn napoleon_geojson() -> serde_json::Value {
-    let wps = napoleon_waypoints();
-    let mut features: Vec<serde_json::Value> = Vec::new();
-
-    let coords: Vec<serde_json::Value> = wps.iter().map(|wp| json!([wp.lng, wp.lat])).collect();
-    features.push(json!({
-        "type": "Feature",
-        "properties": { "name": "Napoleon Trajectory" },
-        "geometry": { "type": "LineString", "coordinates": coords }
-    }));
-
-    for wp in &wps {
-        features.push(json!({
-            "type": "Feature",
-            "properties": { "name": wp.location, "date": wp.date, "event": wp.event, "campaign": wp.campaign },
-            "geometry": { "type": "Point", "coordinates": [wp.lng, wp.lat] }
-        }));
-    }
-
-    json!({ "type": "FeatureCollection", "features": features })
 }
 
 struct Waypoint { date: &'static str, lat: f64, lng: f64, location: &'static str, event: &'static str, campaign: &'static str }
