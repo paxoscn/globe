@@ -32,6 +32,12 @@ import LayerManager from './components/LayerManager';
 import ViewControls from './components/ViewControls';
 import Layout from './components/Layout';
 import { MOCK_LAYERS, MOCK_GEOJSON } from './data/mockLayers';
+import {
+  NAPOLEON_TRAJECTORY,
+  TRAJECTORY_START,
+  interpolatePosition,
+} from './data/napoleonTrajectory';
+import TimelineSlider from './components/TimelineSlider';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -118,6 +124,17 @@ export default function App() {
   const [activeLayerIds, setActiveLayerIds] = useState<Set<string>>(new Set());
   const [interpolatedObjects, setInterpolatedObjects] = useState<InterpolatedObject[]>([]);
   const [, setError] = useState<string | null>(null);
+
+  // Napoleon timeline state
+  const [napoleonTime, setNapoleonTime] = useState<number>(TRAJECTORY_START);
+  const napoleonPosition = useMemo(() => {
+    const pos = interpolatePosition(napoleonTime);
+    return { lat: pos.lat, lng: pos.lng, campaign: pos.campaign };
+  }, [napoleonTime]);
+
+  const handleNapoleonTimeChange = useCallback((timestamp: number) => {
+    setNapoleonTime(timestamp);
+  }, []);
 
   // Refs for services (stable across renders)
   const memoryManagerRef = useRef<MemoryManager>(new MemoryManager());
@@ -355,6 +372,9 @@ export default function App() {
           layerGeoJSON={layerGeoJSON}
           interpolatedObjects={interpolatedObjects}
           onViewportChange={handleViewportChange}
+          napoleonPosition={napoleonPosition}
+          napoleonTrajectory={NAPOLEON_TRAJECTORY}
+          napoleonTime={napoleonTime}
         />
       }
       layerPanel={
@@ -366,10 +386,16 @@ export default function App() {
         />
       }
       overlayControls={
-        <ViewControls
-          onResetOrientation={handleResetOrientation}
-          onResetZoom={handleResetZoom}
-        />
+        <>
+          <ViewControls
+            onResetOrientation={handleResetOrientation}
+            onResetZoom={handleResetZoom}
+          />
+          <TimelineSlider
+            currentTime={napoleonTime}
+            onTimeChange={handleNapoleonTimeChange}
+          />
+        </>
       }
     />
   );

@@ -13,16 +13,29 @@ import type { FeatureCollection } from '../types/geojson';
 import { useArcballRotation } from '../hooks/useArcballRotation';
 import { useZoom, DEFAULT_MIN_ZOOM, DEFAULT_MAX_ZOOM, DEFAULT_ZOOM } from '../hooks/useZoom';
 import { latLngToSpherePosition } from '../utils/geojsonRenderer';
+import type { NapoleonWaypoint } from '../data/napoleonTrajectory';
 
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
+
+export interface NapoleonPosition {
+  lat: number;
+  lng: number;
+  campaign: string;
+}
 
 export interface GlobeRendererProps {
   layers: EnabledLayer[];
   layerGeoJSON?: Record<string, FeatureCollection>;
   interpolatedObjects: InterpolatedObject[];
   onViewportChange: (viewport: Viewport) => void;
+  /** Napoleon's current position for the trajectory feature */
+  napoleonPosition?: NapoleonPosition | null;
+  /** Full trajectory waypoints for rendering the trail */
+  napoleonTrajectory?: NapoleonWaypoint[];
+  /** Current timestamp for determining how much trail to show */
+  napoleonTime?: number;
 }
 
 /** Imperative handle exposed by GlobeRenderer via React.forwardRef. */
@@ -130,7 +143,19 @@ export function zoomToCameraDistance(zoom: number): number {
 // Canvas wrapper that wires wheel events to the zoom hook
 // ---------------------------------------------------------------------------
 
-function GlobeCanvas({ layerGeoJSON, globeRef }: { layerGeoJSON?: Record<string, FeatureCollection>; globeRef?: React.Ref<GlobeHandle> }) {
+function GlobeCanvas({
+  layerGeoJSON,
+  globeRef,
+  napoleonPosition,
+  napoleonTrajectory,
+  napoleonTime,
+}: {
+  layerGeoJSON?: Record<string, FeatureCollection>;
+  globeRef?: React.Ref<GlobeHandle>;
+  napoleonPosition?: NapoleonPosition | null;
+  napoleonTrajectory?: NapoleonWaypoint[];
+  napoleonTime?: number;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   return (
@@ -147,7 +172,14 @@ function GlobeCanvas({ layerGeoJSON, globeRef }: { layerGeoJSON?: Record<string,
       >
         <ambientLight intensity={0.4} />
         <directionalLight position={[5, 3, 5]} intensity={0.6} />
-        <GlobeMeshWithWheel containerRef={containerRef} layerGeoJSON={layerGeoJSON} globeRef={globeRef} />
+        <GlobeMeshWithWheel
+          containerRef={containerRef}
+          layerGeoJSON={layerGeoJSON}
+          globeRef={globeRef}
+          napoleonPosition={napoleonPosition}
+          napoleonTrajectory={napoleonTrajectory}
+          napoleonTime={napoleonTime}
+        />
       </Canvas>
     </div>
   );
@@ -160,10 +192,16 @@ function GlobeMeshWithWheel({
   containerRef,
   layerGeoJSON,
   globeRef,
+  napoleonPosition,
+  napoleonTrajectory,
+  napoleonTime,
 }: {
   containerRef: React.RefObject<HTMLDivElement | null>;
   layerGeoJSON?: Record<string, FeatureCollection>;
   globeRef?: React.Ref<GlobeHandle>;
+  napoleonPosition?: NapoleonPosition | null;
+  napoleonTrajectory?: NapoleonWaypoint[];
+  napoleonTime?: number;
 }) {
   const meshRef = useRef<THREE.Mesh>(null);
   const { refs: arcballRefs, handlers, reset: resetOrientation } = useArcballRotation();
@@ -271,6 +309,72 @@ function GlobeMeshWithWheel({
     }
   });
 
+  // --- Napoleon trail (line object from past waypoints up to current time) ---
+  const napoleonTrailLine = useMemo(() => {
+    if (!napoleonTrajectory || !napoleonTime) return null;
+    const SPHERE_OFFSET = 1.003;
+    const pastPoints: THREE.Vector3[] = [];
+
+    for (const wp of napoleonTrajectory) {
+      if (wp.timestamp > napoleonTime) break;
+      pastPoints.push(latLngToSpherePosition(wp.lat, wp.lng, SPHERE_OFFSET));
+    }
+
+    // Add the interpolated current position as the last point
+    if (napoleonPosition && pastPoints.length > 0) {
+      pastPoints.push(
+        latLngToSpherePosition(napoleonPosition.lat, napoleonPosition.lng, SPHERE_OFFSET),
+      );
+    }
+
+    if (pastPoints.length < 2) return null;
+
+    const geom = new THREE.BufferGeometry().setFromPoints(pastPoints);
+    const mat = new THREE.LineBasicMaterial({ color: 0xff6b35, transparent: true, opacity: 0.7 });
+    return new THREE.Line(geom, mat);
+  }, [napoleonTrajectory, napoleonTime, napoleonPosition]);
+
+  // --- Napoleon marker position ---
+  const napoleonMarkerPos = useMemo(() => {
+    if (!napoleonPosition) return null;
+    return latLngToSpherePosition(napoleonPosition.lat, napoleonPosition.lng, 1.005);
+  }, [napoleonPosition]);
+
+  // --- Napoleon waypoint dots (visited ones) ---
+  const napoleonWaypointDots = useMemo(() => {
+    if (!napoleonTrajectory || !napoleonTime) return [];
+    const SPHERE_OFFSET = 1.003;
+    return napoleonTrajectory
+      .filter((wp) => wp.timestamp <= napoleonTime)
+      .map((wp) => latLngToSpherePosition(wp.lat, wp.lng, SPHERE_OFFSET));
+  }, [napoleonTrajectory, napoleonTime]);
+
+  // Napoleon group ref — syncs rotation with globe
+  const napoleonGroupRef = useRef<THREE.Group>(null);
+
+  // Keep Napoleon group rotation in sync with globe
+  useFrame(() => {
+    if (napoleonGroupRef.current && meshRef.current) {
+      napoleonGroupRef.current.quaternion.copy(meshRef.current.quaternion);
+    }
+  });
+
+  // Pulse animation for the Napoleon marker
+  const napoleonMarkerRef = useRef<THREE.Mesh>(null);
+  const napoleonGlowRef = useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    if (napoleonMarkerRef.current) {
+      const scale = 1 + Math.sin(clock.elapsedTime * 3) * 0.15;
+      napoleonMarkerRef.current.scale.setScalar(scale);
+    }
+    if (napoleonGlowRef.current) {
+      const glowScale = 1.5 + Math.sin(clock.elapsedTime * 2) * 0.3;
+      napoleonGlowRef.current.scale.setScalar(glowScale);
+      (napoleonGlowRef.current.material as THREE.MeshBasicMaterial).opacity =
+        0.2 + Math.sin(clock.elapsedTime * 2) * 0.1;
+    }
+  });
+
   return (
     <>
       <mesh
@@ -296,6 +400,38 @@ function GlobeMeshWithWheel({
           <primitive key={i} object={obj} />
         ))}
       </group>
+
+      {/* Napoleon trajectory layer */}
+      <group ref={napoleonGroupRef}>
+        {/* Trail line */}
+        {napoleonTrailLine && (
+          <primitive object={napoleonTrailLine} />
+        )}
+
+        {/* Visited waypoint dots */}
+        {napoleonWaypointDots.map((pos, i) => (
+          <mesh key={`wp-${i}`} position={pos}>
+            <sphereGeometry args={[0.006, 6, 6]} />
+            <meshBasicMaterial color="#ff9f43" />
+          </mesh>
+        ))}
+
+        {/* Napoleon marker (current position) */}
+        {napoleonMarkerPos && (
+          <>
+            {/* Glow ring */}
+            <mesh ref={napoleonGlowRef} position={napoleonMarkerPos}>
+              <sphereGeometry args={[0.025, 16, 16]} />
+              <meshBasicMaterial color="#ff6b35" transparent opacity={0.25} />
+            </mesh>
+            {/* Main marker */}
+            <mesh ref={napoleonMarkerRef} position={napoleonMarkerPos}>
+              <sphereGeometry args={[0.015, 12, 12]} />
+              <meshBasicMaterial color="#ff4500" />
+            </mesh>
+          </>
+        )}
+      </group>
     </>
   );
 }
@@ -310,10 +446,21 @@ const GlobeRenderer = forwardRef<GlobeHandle, GlobeRendererProps>(function Globe
     layerGeoJSON,
     interpolatedObjects: _interpolatedObjects,
     onViewportChange: _onViewportChange,
+    napoleonPosition,
+    napoleonTrajectory,
+    napoleonTime,
   },
   ref,
 ) {
-  return <GlobeCanvas layerGeoJSON={layerGeoJSON} globeRef={ref} />;
+  return (
+    <GlobeCanvas
+      layerGeoJSON={layerGeoJSON}
+      globeRef={ref}
+      napoleonPosition={napoleonPosition}
+      napoleonTrajectory={napoleonTrajectory}
+      napoleonTime={napoleonTime}
+    />
+  );
 });
 
 export default GlobeRenderer;
