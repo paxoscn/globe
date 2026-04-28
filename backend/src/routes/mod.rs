@@ -1,11 +1,11 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::services::{layer_service, tile_service};
 use crate::AppState;
@@ -99,20 +99,31 @@ pub fn api_router() -> Router<AppState> {
         .route("/api/objects/{object_id}", get(get_object))
 }
 
-/// GET /api/tiles/{layer_id}/{z}/{x}/{y}
+/// Optional query parameters for the tile endpoint.
+#[derive(Debug, Deserialize)]
+pub struct TileQuery {
+    /// Optional time parameter (e.g. Ma value for geological layers).
+    /// When provided, overrides the `z` path parameter for tile lookup.
+    pub time: Option<i32>,
+}
+
+/// GET /api/tiles/{layer_id}/{z}/{x}/{y}?time={ma}
 ///
 /// Returns a GeoJSON FeatureCollection for the requested tile.
-/// Validates tile coordinates and returns 400 for invalid values.
-/// Queries the database via tile_service and returns 404 for missing tiles.
+/// If `?time=` is provided, it overrides the `z` coordinate for lookup
+/// (used for time-indexed layers like continental drift).
+/// Returns 404 if no tile exists for the given coordinates.
 async fn get_tile(
     State(state): State<AppState>,
     Path((layer_id, z, x, y)): Path<(String, i32, i32, i32)>,
+    Query(query): Query<TileQuery>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
-    // Validate coordinates using the tile service's validation
-    let (z_valid, x_valid, y_valid) =
-        tile_service::validate_tile_coords(z, x, y).map_err(|e| ErrorResponse::from_tile_error(&e))?;
+    // If time param is provided, use it as the z coordinate for lookup
+    let lookup_z = query.time.unwrap_or(z);
 
-    // Query the tile from the database
+    let (z_valid, x_valid, y_valid) =
+        tile_service::validate_tile_coords(lookup_z, x, y).map_err(|e| ErrorResponse::from_tile_error(&e))?;
+
     let geojson = tile_service::get_tile(&state.db, &layer_id, z_valid, x_valid, y_valid)
         .await
         .map_err(|e| ErrorResponse::from_tile_error(&e))?;
@@ -167,15 +178,12 @@ mod tests {
 
     #[test]
     fn test_validate_tile_coords_valid() {
-        // z=0: only (0,0) is valid
         assert!(validate_tile_coords(0, 0, 0).is_ok());
-
-        // z=1: x,y in [0,1]
         assert!(validate_tile_coords(1, 0, 0).is_ok());
         assert!(validate_tile_coords(1, 1, 1).is_ok());
-
-        // z=2: x,y in [0,3]
         assert!(validate_tile_coords(2, 3, 3).is_ok());
+        // Time-indexed tiles
+        assert!(validate_tile_coords(300, 0, 0).is_ok());
     }
 
     #[test]
@@ -190,15 +198,13 @@ mod tests {
 
     #[test]
     fn test_validate_tile_coords_x_out_of_range() {
-        // z=0: max_coord = 0, so x=1 is invalid
-        let result = validate_tile_coords(0, 1, 0);
+        let result = validate_tile_coords(0, -1, 0);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_validate_tile_coords_y_out_of_range() {
-        // z=1: max_coord = 1, so y=2 is invalid
-        let result = validate_tile_coords(1, 0, 2);
+        let result = validate_tile_coords(1, 0, -1);
         assert!(result.is_err());
     }
 

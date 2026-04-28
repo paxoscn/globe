@@ -235,55 +235,55 @@ export default function App() {
     [layers, activeLayerIds],
   );
 
-  // Tile data fetched from backend, keyed by layerId
+  // Tile data fetched from backend, keyed by `layerId` or `layerId:time` for time-indexed layers
   const [tileDataMap, setTileDataMap] = useState<Record<string, FeatureCollection>>({});
-  const coastlineCacheRef = useRef<Map<number, FeatureCollection>>(new Map());
+  const tileCacheRef = useRef<Map<string, FeatureCollection>>(new Map());
 
-  // Fetch coastline tile from backend when driftMa changes
-  const worldBordersEnabled = activeLayerIds.has('world-borders');
+  // Compute the time parameter (snapped Ma) for layers with geological timeline
   const snappedMa = Math.max(0, Math.round(driftMa));
-  useEffect(() => {
-    if (!worldBordersEnabled) return;
 
-    const cached = coastlineCacheRef.current.get(snappedMa);
-    if (cached) {
-      setTileDataMap((prev) => ({ ...prev, 'world-borders': cached }));
-      return;
-    }
-
-    let cancelled = false;
-    fetch(`/api/tiles/world-borders/${snappedMa}/0/0`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`${res.status}`);
-        return res.json() as Promise<FeatureCollection>;
-      })
-      .then((data) => {
-        if (cancelled) return;
-        coastlineCacheRef.current.set(snappedMa, data);
-        setTileDataMap((prev) => ({ ...prev, 'world-borders': data }));
-      })
-      .catch(() => {});
-
-    return () => { cancelled = true; };
-  }, [snappedMa, worldBordersEnabled]);
-
-  // Fetch z=0 tile for other enabled layers (cities, napoleon, etc.)
+  // Fetch tiles for all enabled layers via the standard tile API
+  // Layers with a timelineConfig get `?time=` appended
   useEffect(() => {
     for (const el of enabledLayers) {
-      if (el.layerId === 'world-borders') continue; // handled above
-      if (tileDataMap[el.layerId]) continue; // already loaded
+      const hasTimeline = !!el.meta.timelineConfig;
+      const isGeo = el.meta.timelineConfig?.formatType === 'geological';
 
-      fetch(`/api/tiles/${el.layerId}/0/0/0`)
+      // Build cache key: for time-indexed layers include the time value
+      const cacheKey = hasTimeline && isGeo
+        ? `${el.layerId}:${snappedMa}`
+        : el.layerId;
+
+      // Already in cache — update state if needed
+      const cached = tileCacheRef.current.get(cacheKey);
+      if (cached) {
+        setTileDataMap((prev) => {
+          if (prev[el.layerId] === cached) return prev;
+          return { ...prev, [el.layerId]: cached };
+        });
+        continue;
+      }
+
+      // Build URL: standard tile endpoint + optional time param
+      let url = `/api/tiles/${el.layerId}/0/0/0`;
+      if (hasTimeline && isGeo) {
+        url += `?time=${snappedMa}`;
+      }
+
+      fetch(url)
         .then((res) => {
           if (!res.ok) throw new Error(`${res.status}`);
           return res.json() as Promise<FeatureCollection>;
         })
         .then((data) => {
+          tileCacheRef.current.set(cacheKey, data);
           setTileDataMap((prev) => ({ ...prev, [el.layerId]: data }));
         })
-        .catch(() => {});
+        .catch(() => {
+          // No data for this time — don't update, keep previous data
+        });
     }
-  }, [enabledLayers, tileDataMap]);
+  }, [enabledLayers, snappedMa]);
 
   // Build a map of layerId → GeoJSON for all enabled layers
   const layerGeoJSON: Record<string, FeatureCollection> = useMemo(() => {

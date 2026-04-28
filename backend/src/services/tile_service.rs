@@ -86,31 +86,28 @@ pub struct EmbeddedObjectRef {
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Validate tile coordinates. Returns (z as i16, x, y) or an error.
+///
+/// When used with `?time=` parameter, z can be any non-negative value
+/// (representing Ma or other time index). The z <= 20 limit only applies
+/// to standard spatial tiling.
 pub fn validate_tile_coords(z: i32, x: i32, y: i32) -> Result<(i16, i32, i32), TileServiceError> {
-    if z < 0 || z > 20 {
+    if z < 0 || z > i16::MAX as i32 {
         return Err(TileServiceError::InvalidCoordinates {
-            message: format!("Invalid zoom level z={}: must be in range [0, 20]", z),
+            message: format!("Invalid z={}: must be non-negative and <= {}", z, i16::MAX),
         });
     }
 
     let z_i16 = z as i16;
-    let max_coord = (1i32 << z) - 1;
 
-    if x < 0 || x > max_coord {
+    if x < 0 {
         return Err(TileServiceError::InvalidCoordinates {
-            message: format!(
-                "Invalid tile x={} at z={}: must be in range [0, {}]",
-                x, z, max_coord
-            ),
+            message: format!("Invalid tile x={}: must be non-negative", x),
         });
     }
 
-    if y < 0 || y > max_coord {
+    if y < 0 {
         return Err(TileServiceError::InvalidCoordinates {
-            message: format!(
-                "Invalid tile y={} at z={}: must be in range [0, {}]",
-                y, z, max_coord
-            ),
+            message: format!("Invalid tile y={}: must be non-negative", y),
         });
     }
 
@@ -246,6 +243,10 @@ mod tests {
 
         assert!(validate_tile_coords(2, 3, 3).is_ok());
         assert_eq!(validate_tile_coords(2, 3, 3).unwrap(), (2, 3, 3));
+
+        // Time-indexed tiles can have large z values
+        assert!(validate_tile_coords(300, 0, 0).is_ok());
+        assert_eq!(validate_tile_coords(300, 0, 0).unwrap(), (300, 0, 0));
     }
 
     #[test]
@@ -261,41 +262,17 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_tile_coords_z_too_large() {
-        let result = validate_tile_coords(21, 0, 0);
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            TileServiceError::InvalidCoordinates { message } => {
-                assert!(message.contains("z=21"));
-            }
-            _ => panic!("Expected InvalidCoordinates"),
-        }
-    }
-
-    #[test]
     fn test_validate_tile_coords_x_out_of_range() {
-        // z=0: max_coord = 0, so x=1 is invalid
-        let result = validate_tile_coords(0, 1, 0);
+        // Negative x is invalid
+        let result = validate_tile_coords(0, -1, 0);
         assert!(result.is_err());
-        match result.unwrap_err() {
-            TileServiceError::InvalidCoordinates { message } => {
-                assert!(message.contains("x=1"));
-            }
-            _ => panic!("Expected InvalidCoordinates"),
-        }
     }
 
     #[test]
     fn test_validate_tile_coords_y_out_of_range() {
-        // z=1: max_coord = 1, so y=2 is invalid
-        let result = validate_tile_coords(1, 0, 2);
+        // Negative y is invalid
+        let result = validate_tile_coords(1, 0, -1);
         assert!(result.is_err());
-        match result.unwrap_err() {
-            TileServiceError::InvalidCoordinates { message } => {
-                assert!(message.contains("y=2"));
-            }
-            _ => panic!("Expected InvalidCoordinates"),
-        }
     }
 
     #[test]
